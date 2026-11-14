@@ -62,7 +62,9 @@ export function log(tag: LogTag, msg: string) {
   arr.push({ t: Date.now(), tag, msg, bg: AppState.currentState !== 'active' || undefined });
   if (arr.length > MAX) arr.splice(0, arr.length - MAX);
   dirty = true;
-  if (tag === 'error') flushLog();
+  // Lỗi, hoặc app đang ở nền: lưu ngay. App bị iOS tắt ở nền thì không kịp lần lưu 5 giây sau → mất đúng mấy dòng cuối
+  // (vụ 14/11 20:46: app chết ~1 giây sau khi xuống nền, nhật ký không còn dòng nào kể chuyện gì xảy ra)
+  if (tag === 'error' || AppState.currentState !== 'active') flushLog();
   notify();
   // Chép ra nhật ký hệ thống (Android: logcat) để máy kiểm tra tự động trên GitHub đọc được
   if (tag !== 'music' && tag !== 'fx') console.log(`[zyx][${tag}] ${msg}`);
@@ -132,6 +134,10 @@ export function installAppLog() {
   AppState.addEventListener('change', (st) => {
     log('ui', `app → ${st}`);
     if (st !== 'active') flushLog();
+  });
+  // iOS báo sắp hết bộ nhớ: nếu ngay sau dòng này app bị tắt / mở lại từ đầu → bị tắt vì tốn RAM, không phải lỗi code
+  AppState.addEventListener('memoryWarning', () => {
+    log('error', 'cảnh báo: iOS báo app sắp hết bộ nhớ (RAM)');
   });
 
   // Lỗi JS chưa bắt (kể cả lỗi làm app tắt): ghi + lưu ngay rồi để RN xử lý như cũ
