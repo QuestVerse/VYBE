@@ -310,6 +310,7 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
   //  - đang phát: chạy đều giữa hai lần trình phát báo giờ (VinylArc)
   const posSV = useSharedValue(0);
   const dragSV = useSharedValue(0);
+  const startSV = useSharedValue({ x: 0, y: 0 }); // chỗ ngón tay chạm xuống (để biết đã kéo hay chỉ chạm)
   // vừa tua: giữ nút ở chỗ mới tới khi trình phát báo đúng giờ mới (không bị giật lùi về giờ cũ một nhịp)
   const holdRef = useRef({ v: -1, t: 0 });
   const seekRef = useRef({ seekTo: p.seekTo, duration: p.duration });
@@ -352,15 +353,18 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
           const v = Math.max(0, Math.min(1, q));
           scrubSV.value = v;
           dragSV.value = 0;
+          startSV.value = { x: t0.x, y: t0.y };
           posSV.value = withTiming(v, SEEK_GLIDE); // chạm: trượt nhẹ tới đó
           scheduleOnRN(hold, v);
           GestureStateManager.activate(e.handlerTag);
         } else GestureStateManager.fail(e.handlerTag);
       },
-      onUpdate: (e: { x: number; y: number; translationX: number; translationY: number }) => {
+      onUpdate: (e: { x: number; y: number }) => {
         'worklet';
-        // ngón tay đã thật sự kéo (>6px) → nút bám thẳng theo tay, không còn trượt
-        if (!dragSV.value && Math.hypot(e.translationX, e.translationY) > 6) dragSV.value = 1;
+        // ngón tay đã thật sự kéo (>6px so với chỗ chạm) → nút bám thẳng theo tay, không còn trượt.
+        // (Bản trước đo bằng translationX/Y của cử chỉ — trên máy thật không tăng khi giữ rồi kéo → không kéo được)
+        const st = startSV.value;
+        if (!dragSV.value && Math.hypot(e.x - st.x, e.y - st.y) > 6) dragSV.value = 1;
         if (!dragSV.value) return;
         const v = at(e.x, e.y, lp.value);
         scrubSV.value = v;
