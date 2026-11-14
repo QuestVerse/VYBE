@@ -170,13 +170,16 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
   // (khói + thanh thời gian). Nghe nhạc nền không cần chúng, và không để thứ gì trong số đó chạy ngầm ngốn CPU (văng app 16:58:
   // iOS tắt app vì một luồng JavaScript dùng 84% CPU suốt 1 phút khi đang nghe nền)
   const [fg, setFg] = useState(AppState.currentState !== 'background');
+  const fgRef = useRef(fg);
   useEffect(() => {
     const sub = AppState.addEventListener('change', (st) => {
       const on = st !== 'background';
-      setFg((was) => {
-        if (was !== on) log('ui', on ? 'đĩa than: mở băng (app lên lại)' : 'đĩa than: đóng băng khi xuống nền');
-        return on;
-      });
+      // ghi log NGOÀI hàm cập nhật state: React có thể gọi lại hàm đó nhiều lần → trước đây ra 5 dòng mở/đóng băng cùng 1ms
+      if (fgRef.current !== on) {
+        fgRef.current = on;
+        log('ui', on ? 'đĩa than: mở băng (app lên lại)' : 'đĩa than: đóng băng khi xuống nền');
+      }
+      setFg(on);
     });
     return () => sub.remove();
   }, []);
