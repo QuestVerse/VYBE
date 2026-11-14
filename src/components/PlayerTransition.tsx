@@ -63,9 +63,11 @@ export const usePlayerTransition = () => useContext(TransitionContext);
 
 // Vùng cho phép vuốt xuống để thu player (thanh nắm, ảnh bìa, khoảng trống...). Cử chỉ chạy trên luồng giao diện:
 // player bám ngón tay 1:1 kể cả khi JS đang bận
-export function CloseZone({ children }: { children: React.ReactElement }) {
+// waitFor: cử chỉ con cần được ưu tiên (vd. kéo thanh thời gian đĩa than): vuốt-xuống-thu-player chờ nó thất bại rồi mới nhận
+export function CloseZone({ children, waitFor }: { children: React.ReactElement; waitFor?: ReturnType<typeof usePanGesture> }) {
   const { closeCfg } = useContext(TransitionContext);
-  const g = usePanGesture(closeCfg ?? { enabled: false });
+  const cfg = useMemo(() => (closeCfg ? (waitFor ? { ...closeCfg, requireToFail: waitFor } : closeCfg) : { enabled: false }), [closeCfg, waitFor]);
+  const g = usePanGesture(cfg);
   return <GestureDetector gesture={g}>{children}</GestureDetector>;
 }
 

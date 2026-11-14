@@ -329,6 +329,7 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
       log('music', `thanh thời gian đĩa than: tua tới ${(v * q.duration).toFixed(1)}/${q.duration.toFixed(1)}s`);
       if (q.duration > 0) q.seekTo(v * q.duration);
     };
+    const note = (msg: string) => log('music', `thanh thời gian đĩa than: ${msg}`);
     const drop = () => {
       hold(-1);
       log('music', 'thanh thời gian đĩa than: cử chỉ tua bị huỷ (không tua)');
@@ -358,6 +359,9 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
     };
     return {
       manualActivation: true,
+      // Vuốt lên (mở lời) / vuốt xuống phải CHỜ cử chỉ tua thất bại mới được chạy. Trước đây kéo nút dọc theo cung (cung chạy
+      // chéo nên tay đi lên / xuống) được hơn 12px là cử chỉ vuốt lên nhận luôn và huỷ cử chỉ tua → không giữ-kéo được
+      block: [up, down],
       onTouchesDown: (e: { handlerTag: number; allTouches: { x: number; y: number }[] }) => {
         'worklet';
         const t0 = e.allTouches[0];
@@ -372,6 +376,7 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
           startSV.value = { x: t0.x, y: t0.y };
           posSV.value = withTiming(v, SEEK_GLIDE); // chạm: trượt nhẹ tới đó
           scheduleOnRN(hold, v);
+          scheduleOnRN(note, `chạm ở ${Math.round(v * 100)}%`);
           GestureStateManager.activate(e.handlerTag);
         } else GestureStateManager.fail(e.handlerTag);
       },
@@ -380,7 +385,10 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
         // ngón tay đã thật sự kéo (>6px so với chỗ chạm) → nút bám thẳng theo tay, không còn trượt.
         // (Bản trước đo bằng translationX/Y của cử chỉ — trên máy thật không tăng khi giữ rồi kéo → không kéo được)
         const st = startSV.value;
-        if (!dragSV.value && Math.hypot(e.x - st.x, e.y - st.y) > 6) dragSV.value = 1;
+        if (!dragSV.value && Math.hypot(e.x - st.x, e.y - st.y) > 6) {
+          dragSV.value = 1;
+          scheduleOnRN(note, 'bắt đầu kéo');
+        }
         if (!dragSV.value) return;
         const v = at(e.x, e.y, lp.value);
         scrubSV.value = v;
@@ -406,7 +414,7 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
         finish(e.canceled, scrubSV.value);
       },
     };
-  }, [g]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [g, up, down]); // eslint-disable-line react-hooks/exhaustive-deps
   const seekA = usePanGesture(seekGest);
   const seekB = usePanGesture(seekGest);
 
@@ -433,7 +441,7 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
           </View>
         </GestureDetector>
       ) : (
-        <CloseZone key="up">
+        <CloseZone key="up" waitFor={seekB}>
           <View style={StyleSheet.absoluteFill}>
             <GestureDetector gesture={up}>
               <View style={StyleSheet.absoluteFill}>
