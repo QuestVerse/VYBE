@@ -323,7 +323,12 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
     const commit = (v: number) => {
       const q = seekRef.current;
       hold(v);
+      log('music', `thanh thời gian đĩa than: tua tới ${(v * q.duration).toFixed(1)}/${q.duration.toFixed(1)}s`);
       if (q.duration > 0) q.seekTo(v * q.duration);
+    };
+    const drop = () => {
+      hold(-1);
+      log('music', 'thanh thời gian đĩa than: cử chỉ tua bị huỷ (không tua)');
     };
     const local = (x: number, y: number, k: number) => {
       'worklet';
@@ -339,6 +344,14 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
     const at = (x: number, y: number, k: number) => {
       'worklet';
       return Math.max(0, Math.min(1, raw(x, y, k)));
+    };
+    // kết thúc một lần chạm trên thanh: chỉ lần gọi ĐẦU TIÊN có tác dụng (scrubSV về -1 ngay)
+    const finish = (canceled: boolean, v: number) => {
+      'worklet';
+      if (v < 0 || scrubSV.value < 0) return;
+      scrubSV.value = -1;
+      if (canceled) scheduleOnRN(drop);
+      else scheduleOnRN(commit, v);
     };
     return {
       manualActivation: true,
@@ -373,13 +386,21 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
       onDeactivate: (e: { canceled: boolean }) => {
         'worklet';
         const v = scrubSV.value;
-        scrubSV.value = -1;
-        if (!e.canceled && v >= 0) scheduleOnRN(commit, v);
-        else scheduleOnRN(hold, -1);
+        finish(e.canceled, v);
       },
-      onFinalize: () => {
+      // Nhấc tay: tua NGAY tại đây (không chờ onDeactivate). Trước đây tua chỉ nằm ở onDeactivate; nếu nó không chạy / chạy
+      // sau onFinalize (onFinalize xoá vị trí về -1 trước) thì không tua gì cả → nút trượt về chỗ đang phát
+      onTouchesUp: () => {
         'worklet';
-        scrubSV.value = -1;
+        finish(false, scrubSV.value);
+      },
+      onTouchesCancel: () => {
+        'worklet';
+        finish(true, scrubSV.value);
+      },
+      onFinalize: (e: { canceled: boolean }) => {
+        'worklet';
+        finish(e.canceled, scrubSV.value);
       },
     };
   }, [g]); // eslint-disable-line react-hooks/exhaustive-deps
