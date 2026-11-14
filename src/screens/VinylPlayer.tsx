@@ -41,6 +41,8 @@ const RPM = 3; // tốc độ xoay: chậm nhất
 const LABEL = 0.84; // nhãn ảnh = 84% đường kính đĩa
 const M = 14; // hai đầu thanh thời gian cách mép màn hình
 const MOVE = { duration: 520, easing: Easing.bezier(0.25, 0.8, 0.25, 1) };
+// chạm lên thanh thời gian: nút trượt tới chỗ chạm, chậm dần (không nảy)
+const SEEK_GLIDE = { duration: 260, easing: Easing.bezier(0.23, 1, 0.32, 1) };
 
 const fmt = (s: number) => `${Math.floor(Math.max(0, s) / 60)}:${String(Math.floor(Math.max(0, s) % 60)).padStart(2, '0')}`;
 
@@ -83,25 +85,34 @@ function useGeo(W: number, H: number, top: number, bottomInset: number) {
     const rt = r + 14; // số giờ: ngoài thanh thời gian
     const rimY = top + 96;
     const half = (rr: number) => Math.asin(Math.min(1, (W / 2 - M) / rr));
+    // Thanh thời gian dài 3/4 cung chạy hết bề ngang màn hình: cắt bớt đều hai đầu (mỗi đầu 1/8)
+    const SHORT = 0.125;
+    const cut = (s: number, e: number) => [s + (e - s) * SHORT, e - (e - s) * SHORT] as const;
+    const A0 = Math.acos(Math.min(1, M / r));
+    const A1 = Math.acos(Math.min(1, (W - M) / r));
+    const [a0, a1] = cut(A0, A1);
+    const [b0, b1] = cut(Math.PI / 2 + half(r), Math.PI / 2 - half(r));
+    const [ta0, ta1] = cut(Math.acos(Math.min(1, M / rt)), Math.acos(Math.min(1, (W - M) / rt)));
+    const [tb0, tb1] = cut(Math.PI / 2 + half(rt), Math.PI / 2 - half(rt));
     const g = {
       R, r, rt, rimY,
       cx1: W / 2,
       cy1: rimY - R,
-      // cung thời gian: [đầu bài, cuối bài] ở hai trạng thái
-      a0: Math.acos(Math.min(1, M / r)),
-      a1: Math.acos(Math.min(1, (W - M) / r)),
-      b0: Math.PI / 2 + half(r),
-      b1: Math.PI / 2 - half(r),
+      // cung thời gian: [đầu bài, cuối bài] ở hai trạng thái (0 = xem đĩa, 1 = xem lời)
+      a0, a1, b0, b1,
       // đường chữ số giờ
-      ta0: Math.acos(Math.min(1, M / rt)),
-      ta1: Math.acos(Math.min(1, (W - M) / rt)),
-      tb0: Math.PI / 2 + half(rt),
-      tb1: Math.PI / 2 - half(rt),
+      ta0, ta1, tb0, tb1,
+      // hoành độ hai đầu thanh ở hai trạng thái (vòng giả cắt đúng trong khoảng này)
+      gx0a: r * Math.cos(a0),
+      gx1a: r * Math.cos(a1),
+      gx0b: W / 2 + r * Math.cos(b0),
+      gx1b: W / 2 + r * Math.cos(b1),
     };
     return {
       ...g,
-      yLeft: r * Math.sin(g.a0),
-      yRight: r * Math.sin(g.a1),
+      // vị trí các phần khác (cột icon, lời) vẫn tính theo cung đầy đủ như cũ → không xê dịch
+      yLeft: r * Math.sin(A0),
+      yRight: r * Math.sin(A1),
       yEnds1: g.cy1 + r * Math.sin(g.b0), // hai đầu cung lúc xem lời
       yLow1: g.cy1 + r, // điểm thấp nhất của cung lúc xem lời
     };
@@ -293,12 +304,24 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
   // (các cử chỉ vuốt bị huỷ); chạm chỗ khác thì bỏ qua ngay → vuốt xuống thu player / vuốt lên mở lời vẫn chạy ở MỌI chỗ trống,
   // kể cả khoảng trên tên nghệ sĩ và cạnh thanh âm lượng (trước đây một khung chữ nhật quanh cung chặn hết chỗ đó)
   const scrubSV = useSharedValue(-1);
+  // posSV: vị trí nút tròn / phần đã phát đang VẼ (0..1), chạy hẳn trên luồng giao diện:
+  //  - kéo: bám đúng ngón tay từng khung hình (trước đây đi vòng qua JS → trễ, giật)
+  //  - chạm một cái: trượt nhẹ tới chỗ chạm (260ms, chậm dần)
+  //  - đang phát: chạy đều giữa hai lần trình phát báo giờ (VinylArc)
+  const posSV = useSharedValue(0);
+  const dragSV = useSharedValue(0);
+  // vừa tua: giữ nút ở chỗ mới tới khi trình phát báo đúng giờ mới (không bị giật lùi về giờ cũ một nhịp)
+  const holdRef = useRef({ v: -1, t: 0 });
   const seekRef = useRef({ seekTo: p.seekTo, duration: p.duration });
   seekRef.current = { seekTo: p.seekTo, duration: p.duration };
   const seekGest = useMemo(() => {
     const { r, cx1, cy1, a0, a1, b0, b1 } = g;
+    const hold = (v: number) => {
+      holdRef.current = { v, t: Date.now() };
+    };
     const commit = (v: number) => {
       const q = seekRef.current;
+      hold(v);
       if (q.duration > 0) q.seekTo(v * q.duration);
     };
     const local = (x: number, y: number, k: number) => {
@@ -307,10 +330,14 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
       const ly = y - k * cy1;
       return { lx, ly, s: k > 0.5 ? b0 : a0, e: k > 0.5 ? b1 : a1 };
     };
-    const at = (x: number, y: number, k: number) => {
+    const raw = (x: number, y: number, k: number) => {
       'worklet';
       const l = local(x, y, k);
-      return Math.max(0, Math.min(1, (Math.atan2(l.ly, l.lx) - l.s) / (l.e - l.s)));
+      return (Math.atan2(l.ly, l.lx) - l.s) / (l.e - l.s);
+    };
+    const at = (x: number, y: number, k: number) => {
+      'worklet';
+      return Math.max(0, Math.min(1, raw(x, y, k)));
     };
     return {
       manualActivation: true,
@@ -319,20 +346,32 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
         const t0 = e.allTouches[0];
         const k = lp.value;
         const l = local(t0.x, t0.y, k);
-        if (Math.abs(Math.hypot(l.lx, l.ly) - r) < 30) {
-          scrubSV.value = at(t0.x, t0.y, k);
+        const q = raw(t0.x, t0.y, k);
+        // sát cung (±30) VÀ trong đoạn thanh (dư ra một chút ở hai đầu cho dễ chạm)
+        if (Math.abs(Math.hypot(l.lx, l.ly) - r) < 30 && q > -0.05 && q < 1.05) {
+          const v = Math.max(0, Math.min(1, q));
+          scrubSV.value = v;
+          dragSV.value = 0;
+          posSV.value = withTiming(v, SEEK_GLIDE); // chạm: trượt nhẹ tới đó
+          scheduleOnRN(hold, v);
           GestureStateManager.activate(e.handlerTag);
         } else GestureStateManager.fail(e.handlerTag);
       },
-      onUpdate: (e: { x: number; y: number }) => {
+      onUpdate: (e: { x: number; y: number; translationX: number; translationY: number }) => {
         'worklet';
-        scrubSV.value = at(e.x, e.y, lp.value);
+        // ngón tay đã thật sự kéo (>6px) → nút bám thẳng theo tay, không còn trượt
+        if (!dragSV.value && Math.hypot(e.translationX, e.translationY) > 6) dragSV.value = 1;
+        if (!dragSV.value) return;
+        const v = at(e.x, e.y, lp.value);
+        scrubSV.value = v;
+        posSV.value = v;
       },
       onDeactivate: (e: { canceled: boolean }) => {
         'worklet';
         const v = scrubSV.value;
         scrubSV.value = -1;
         if (!e.canceled && v >= 0) scheduleOnRN(commit, v);
+        else scheduleOnRN(hold, -1);
       },
       onFinalize: () => {
         'worklet';
@@ -379,7 +418,7 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
         </CloseZone>
       )}
 
-      {fg && dbg.arc && <VinylArc g={g} lp={lp} accent={accent} scrubSV={scrubSV} duration={p.duration} loading={p.loading} failed={p.failed} />}
+      {fg && dbg.arc && <VinylArc g={g} lp={lp} accent={accent} scrubSV={scrubSV} posSV={posSV} holdRef={holdRef} playing={p.isPlaying} duration={p.duration} loading={p.loading} failed={p.failed} />}
 
       {lyricsLive && (
         <Animated.View
@@ -666,11 +705,19 @@ const DiscOver = React.memo(function DiscOver({ g, lp, sw }: { g: Geo; lp: Share
 // x = W − M (cả khi xem đĩa lẫn khi xem lời) → cắt vòng giả đúng trong dải đó là trùng khít với thanh thật
 const GhostArc = React.memo(function GhostArc({ g, lp, sw, W, H }: { g: Geo; lp: SharedValue<number>; sw: SharedValue<number>; W: number; H: number }) {
   const style = useDiscStyle(g, lp, sw);
-  const shown = useAnimatedStyle(() => ({ opacity: playerProgress.value > 0.995 ? 0 : 1 }));
+  const { gx0a, gx0b, gx1a, gx1b } = g;
+  const clip = useAnimatedStyle(() => {
+    const k = lp.value;
+    const l = mix(gx0a, gx0b, k);
+    return { left: l, width: Math.max(0, mix(gx1a, gx1b, k) - l), opacity: playerProgress.value > 0.995 ? 0 : 1 };
+  });
+  const back = useAnimatedStyle(() => ({ left: -mix(gx0a, gx0b, lp.value) }));
   return (
-    <Animated.View pointerEvents="none" style={[{ position: 'absolute', left: M, top: 0, width: W - 2 * M, height: H, overflow: 'hidden' }, shown]}>
-      <Animated.View style={[{ position: 'absolute', left: -M, top: 0, width: 0, height: 0 }, style]}>
-        <View style={ring(g.r + 1.5, { borderWidth: 3, borderColor: 'rgba(255,255,255,0.18)' })} />
+    <Animated.View pointerEvents="none" style={[{ position: 'absolute', top: 0, height: H, overflow: 'hidden' }, clip]}>
+      <Animated.View style={[{ position: 'absolute', top: 0, width: W, height: H }, back]}>
+        <Animated.View style={[{ position: 'absolute', left: 0, top: 0, width: 0, height: 0 }, style]}>
+          <View style={ring(g.r + 1.5, { borderWidth: 3, borderColor: 'rgba(255,255,255,0.18)' })} />
+        </Animated.View>
       </Animated.View>
     </Animated.View>
   );
@@ -678,31 +725,51 @@ const GhostArc = React.memo(function GhostArc({ g, lp, sw, W, H }: { g: Geo; lp:
 
 // Thanh thời gian cong: chỉ phần này đọc thời gian đã phát (đổi vài lần mỗi giây). Đi theo đĩa khi chuyển sang lời
 const VinylArc = React.memo(function VinylArc({
-  g, lp, accent, scrubSV, duration, loading, failed,
-}: { g: Geo; lp: SharedValue<number>; accent: SharedValue<string>; scrubSV: SharedValue<number>; duration: number; loading: boolean; failed: boolean }) {
+  g, lp, accent, scrubSV, posSV, holdRef, playing, duration, loading, failed,
+}: {
+  g: Geo; lp: SharedValue<number>; accent: SharedValue<string>; scrubSV: SharedValue<number>; posSV: SharedValue<number>;
+  holdRef: React.MutableRefObject<{ v: number; t: number }>; playing: boolean; duration: number; loading: boolean; failed: boolean;
+}) {
   const t = useT();
   const progress = useProgress();
   markRender('thanh thời gian');
-  // đang kéo tua (cử chỉ tua nằm ở VinylPlayer, chạy trên luồng giao diện): scrubSV = vị trí 0..1, -1 = không kéo
-  const [scrub, setScrub] = useState<number | null>(null);
+  // đang kéo tua (cử chỉ tua nằm ở VinylPlayer): số giờ bên trái chỉ cập nhật khi đổi sang GIÂY khác (không vẽ lại mỗi khung)
+  const durSV = useSharedValue(duration);
+  useEffect(() => {
+    durSV.value = duration;
+  }, [duration]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [scrubSec, setScrubSec] = useState<number | null>(null);
   useAnimatedReaction(
-    () => scrubSV.value,
+    () => (scrubSV.value < 0 ? -1 : Math.floor(scrubSV.value * durSV.value)),
     (v, prev) => {
-      if (v !== prev) scheduleOnRN(setScrub, v < 0 ? null : v);
+      if (v !== prev) scheduleOnRN(setScrubSec, v < 0 ? null : v);
     }
   );
-  const pct = scrub ?? (duration > 0 ? Math.min(1, progress / duration) : 0);
+  // Nút chạy theo giờ đang phát: trình phát báo giờ mỗi ~0,5s → trước đây nút nhảy cóc từng nấc. Giờ mỗi lần báo, nút chạy ĐỀU
+  // (tuyến tính) tới chỗ sẽ tới sau 0,5s → liền mạch. Nhảy xa (đổi bài, tua bằng nút khác) thì trượt nhanh 250ms
+  const h = holdRef.current;
+  const holding = h.v >= 0 && Date.now() - h.t < 2500 && Math.abs(progress - h.v * duration) > 1.5;
+  useEffect(() => {
+    if (duration <= 0 || scrubSV.value >= 0) return;
+    if (holdRef.current.v >= 0) {
+      if (holding) return;
+      holdRef.current.v = -1;
+    }
+    const now = Math.min(1, progress / duration);
+    const jump = Math.abs(now - posSV.value) * duration > 2;
+    if (jump || !playing) posSV.value = withTiming(now, { duration: jump ? 250 : 150, easing: Easing.bezier(0.23, 1, 0.32, 1) });
+    else posSV.value = withTiming(Math.min(1, (progress + 0.5) / duration), { duration: 500, easing: Easing.linear });
+  }, [progress, duration, playing]); // eslint-disable-line react-hooks/exhaustive-deps
   const font = getTimeFont();
 
-  const cur = fmt(pct * duration);
+  const curSec = scrubSec ?? (holding ? h.v * duration : progress);
+  const cur = fmt(curSec);
   const right = loading ? t('common.loading') : failed ? t('np.failed') : fmt(duration);
   const rightW = font.measureText(right).width;
 
-  // ---- vẽ theo lp
-  const pctSV = useSharedValue(pct);
-  useEffect(() => {
-    pctSV.value = pct;
-  }, [pct]); // eslint-disable-line react-hooks/exhaustive-deps
+  // ---- vẽ theo lp (vị trí nút: posSV, trên luồng giao diện)
+  const endSV = useDerivedValue(() => posSV.value);
+  const knobR = useDerivedValue(() => (scrubSV.value >= 0 ? 9 : 6.5));
   const { r, rt, cx1, cy1, a0, a1, b0, b1, ta0, ta1, tb0, tb1 } = g;
   const bar = useDerivedValue(() => {
     const k = lp.value;
@@ -718,12 +785,12 @@ const VinylArc = React.memo(function VinylArc({
   }, [rightW]);
   const knobX = useDerivedValue(() => {
     const k = lp.value;
-    const a = mix(mix(a0, b0, k), mix(a1, b1, k), pctSV.value);
+    const a = mix(mix(a0, b0, k), mix(a1, b1, k), posSV.value);
     return k * cx1 + r * Math.cos(a);
   });
   const knobY = useDerivedValue(() => {
     const k = lp.value;
-    const a = mix(mix(a0, b0, k), mix(a1, b1, k), pctSV.value);
+    const a = mix(mix(a0, b0, k), mix(a1, b1, k), posSV.value);
     return k * cy1 + r * Math.sin(a);
   });
 
@@ -731,8 +798,8 @@ const VinylArc = React.memo(function VinylArc({
     <>
       <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
         <Path path={bar} style="stroke" strokeWidth={3} strokeCap="round" color="rgba(255,255,255,0.18)" />
-        <Path path={bar} style="stroke" strokeWidth={3} strokeCap="round" color={accent} start={0} end={pct} />
-        <Circle cx={knobX} cy={knobY} r={scrub != null ? 9 : 6.5} color="#FFFFFF" />
+        <Path path={bar} style="stroke" strokeWidth={3} strokeCap="round" color={accent} start={0} end={endSV} />
+        <Circle cx={knobX} cy={knobY} r={knobR} color="#FFFFFF" />
         <TextPath path={textPath} font={font} text={cur} initialOffset={0} color={TEXT2} />
         <TextPath path={textPath} font={font} text={right} initialOffset={rightOff} color={failed ? '#FF8A80' : TEXT2} />
       </Canvas>
