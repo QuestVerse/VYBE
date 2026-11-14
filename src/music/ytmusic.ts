@@ -132,7 +132,41 @@ function rememberClient(client: string) {
   } catch {}
 }
 
+// Lý do YouTube không cho phát (cần đăng nhập / bị nghi là bot / video bị chặn vùng...): "Streaming data not available"
+// không nói gì, nên hỏi thêm thông tin video để ghi vào nhật ký
+async function whyUnplayable(yt: Innertube, videoId: string): Promise<string> {
+  try {
+    const info = await withTimeout(yt.getBasicInfo(videoId, { client: 'IOS' } as any), 5000, 'hỏi lý do');
+    const ps: any = (info as any).playability_status;
+    if (!ps) return 'không rõ lý do';
+    return [ps.status, ps.reason, ps.error_screen?.subreason?.toString?.()].filter(Boolean).join(' · ') || 'không rõ lý do';
+  } catch (e) {
+    return `không hỏi được lý do (${String((e as Error)?.message ?? e).slice(0, 80)})`;
+  }
+}
+
+// Lấy link phát. Mọi client đều hỏng thì: ghi lý do YouTube đưa ra, tạo PHIÊN MỚI rồi thử lại một lần
+// (phiên cũ có thể đã bị YouTube từ chối — trước đây phải tắt mở app mới hết)
 export async function getAudio(videoId: string, log?: Log, muxed = false): Promise<AudioInfo> {
+  try {
+    return await getAudioOnce(videoId, log, muxed);
+  } catch (e1) {
+    let why = '';
+    try {
+      const yt = await getSession(log);
+      why = await whyUnplayable(yt, videoId);
+    } catch {}
+    log?.(`YouTube trả lời: ${why}. Tạo phiên mới và thử lại...`);
+    sessionPromise = null;
+    try {
+      return await getAudioOnce(videoId, log, muxed);
+    } catch (e2) {
+      throw new Error(`${String((e2 as Error)?.message ?? e2)}\nYouTube trả lời: ${why}`);
+    }
+  }
+}
+
+async function getAudioOnce(videoId: string, log?: Log, muxed = false): Promise<AudioInfo> {
   const [yt] = await Promise.all([withTimeout(getSession(log), 15000, 'tạo phiên'), loadPreferredClient()]);
   const errors: string[] = [];
 
