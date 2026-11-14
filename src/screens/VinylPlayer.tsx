@@ -349,6 +349,20 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
       'worklet';
       return Math.max(0, Math.min(1, raw(x, y, k)));
     };
+    // ngón tay đã thật sự kéo (>6px so với chỗ chạm) → nút bám thẳng theo tay, không còn trượt
+    const move = (x: number, y: number) => {
+      'worklet';
+      if (scrubSV.value < 0) return; // không phải lần chạm trên thanh (hoặc đã nhấc tay)
+      const st = startSV.value;
+      if (!dragSV.value && Math.hypot(x - st.x, y - st.y) > 6) {
+        dragSV.value = 1;
+        scheduleOnRN(note, 'bắt đầu kéo');
+      }
+      if (!dragSV.value) return;
+      const v = at(x, y, lp.value);
+      scrubSV.value = v;
+      posSV.value = v;
+    };
     // kết thúc một lần chạm trên thanh: chỉ lần gọi ĐẦU TIÊN có tác dụng (scrubSV về -1 ngay)
     const finish = (canceled: boolean, v: number) => {
       'worklet';
@@ -380,19 +394,16 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
           GestureStateManager.activate(e.handlerTag);
         } else GestureStateManager.fail(e.handlerTag);
       },
+      // Ngón tay di chuyển: đọc thẳng toạ độ chạm (onTouchesMove) — cùng hệ toạ độ với lúc chạm xuống. Log 03:00 cho thấy
+      // onUpdate của cử chỉ không báo được lần kéo nào (chỉ có "chạm" rồi "tua", không có "bắt đầu kéo") → dùng cả hai
+      onTouchesMove: (e: { allTouches: { x: number; y: number }[] }) => {
+        'worklet';
+        const t = e.allTouches[0];
+        if (t) move(t.x, t.y);
+      },
       onUpdate: (e: { x: number; y: number }) => {
         'worklet';
-        // ngón tay đã thật sự kéo (>6px so với chỗ chạm) → nút bám thẳng theo tay, không còn trượt.
-        // (Bản trước đo bằng translationX/Y của cử chỉ — trên máy thật không tăng khi giữ rồi kéo → không kéo được)
-        const st = startSV.value;
-        if (!dragSV.value && Math.hypot(e.x - st.x, e.y - st.y) > 6) {
-          dragSV.value = 1;
-          scheduleOnRN(note, 'bắt đầu kéo');
-        }
-        if (!dragSV.value) return;
-        const v = at(e.x, e.y, lp.value);
-        scrubSV.value = v;
-        posSV.value = v;
+        move(e.x, e.y);
       },
       onDeactivate: (e: { canceled: boolean }) => {
         'worklet';
