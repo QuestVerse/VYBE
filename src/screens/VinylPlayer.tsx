@@ -140,7 +140,8 @@ export type VinylProps = {
   lyricsOpen: boolean;
   setLyricsOpen: (v: boolean) => void;
   lyrics: React.ReactNode;
-  /** bài không có lời (đã tìm xong, không thấy): khung lời trống không bắt chạm, vuốt xuống chỗ đó thu player như ở mặt đĩa */
+  /** bài không có lời (đã tìm xong, không thấy): khung lời trống không bắt chạm → vuốt xuống ở bất kỳ đâu phía trên cũng về
+   *  mặt đĩa (vuốt thêm lần nữa mới thu về mini player) */
   noLyrics?: boolean;
   children?: React.ReactNode; // hàng chờ...
 };
@@ -445,7 +446,7 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
       </View>
 
       {/* Lớp nhận cử chỉ ở chỗ trống */}
-      {p.lyricsOpen && !p.noLyrics ? (
+      {p.lyricsOpen ? (
         <GestureDetector key="down" gesture={down}>
           <View style={StyleSheet.absoluteFill}>
             <GestureDetector gesture={seekA}>
