@@ -328,6 +328,7 @@ function VinylNowPlaying({ onClose }: { onClose: () => void }) {
       lyricsOpen={showLyrics}
       setLyricsOpen={setShowLyrics}
       lyrics={lyricsNode}
+      noLyrics={lyr.status === 'done' && !lyr.lyrics}
       volume={volume}
       like={likeNode}
       fx={fxNode}
