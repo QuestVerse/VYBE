@@ -199,7 +199,8 @@ const posMemo = { ax: 0, ay: 0, lx: 0, ly: 0, ok: false };
 export function NowPlayingScreen({ onClose }: { onClose: () => void }) {
   const { theme } = useTheme();
   const win = useScreenSize();
-  if (theme.player.look === 'vinyl' && win.width <= win.height) return <VinylNowPlaying onClose={onClose} />;
+  // Đĩa than dùng cả khi xoay ngang (đĩa trái · lời phải, VinylPlayer tự đổi bố cục) → xoay máy không bị đổi sang player thường
+  if (theme.player.look === 'vinyl') return <VinylNowPlaying onClose={onClose} />;
   return <ClassicNowPlaying onClose={onClose} />;
 }
 

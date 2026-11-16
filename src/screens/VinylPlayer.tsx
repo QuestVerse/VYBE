@@ -10,7 +10,8 @@
 // màn hình) → chỉ còn một vành cong ở trên cùng, quanh Dynamic Island, thấy chút ảnh bìa; thanh thời gian chạy theo đĩa và
 // thành một cung cân đối ở giữa phía trên; lời trượt lên ở khoảng giữa. Phần dưới giữ nguyên. Vuốt XUỐNG → đĩa về chỗ cũ
 // Mọi thứ đi theo một giá trị lp (0 = đĩa, 1 = lời) chạy trên luồng giao diện.
-// Chỉ dùng cho màn hình dọc; xoay ngang thì dùng bố cục player thường
+// XOAY NGANG: đĩa lớn bên trái (thanh thời gian cong dọc rìa phải của đĩa), nửa phải là tên bài + lời + nút (LandPanel);
+// xoay máy thì đĩa trượt vào từ trái, nửa phải trượt vào từ phải
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Image as RNImage, PanResponder, Platform, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
 import Animated, {
@@ -66,28 +67,53 @@ const arcPath = (cx: number, cy: number, rr: number, b0: number, b1: number) => 
 
 // Đổi bài: độ dời để đĩa khuất hẳn. Đang xem đĩa (lp 0): chéo về góc trên trái, đủ xa để cả vành (bán kính R) ra khỏi màn hình.
 // Đang xem lời (lp 1): thẳng lên trên, qua khỏi mép trên
-const swapDX = (R: number, k: number) => {
+// Màn ngang: đĩa nằm bên trái → trượt thẳng sang trái cho khuất (sdx0 / sdy0 tính sẵn trong useGeo)
+const swapDX = (sdx0: number, k: number) => {
   'worklet';
-  return mix(-(R + 40) / Math.SQRT2, 0, k);
+  return mix(sdx0, 0, k);
 };
-const swapDY = (R: number, rimY: number, k: number) => {
+const swapDY = (sdy0: number, sdy1: number, k: number) => {
   'worklet';
-  return mix(-(R + 40) / Math.SQRT2, -(rimY + 40), k);
+  return mix(sdy0, sdy1, k);
 };
 
 // Hình học ở hai trạng thái (toạ độ màn hình):
 //  0 (đĩa): tâm đĩa ở góc trên trái (0,0); cung thời gian từ mép trái (dưới) lên mép phải (trên)
 //  1 (lời): tâm đĩa ở (W/2, rimY − R) → mép dưới của đĩa nằm ở rimY; cung thời gian cân đối hai bên, ngay dưới vành đĩa
+// MÀN NGANG (land): đĩa lớn nằm bên trái, tâm ở giữa chiều cao, mép phải đĩa ở ~40% bề ngang; thanh thời gian cong chạy
+// dọc rìa phải của đĩa (từ dưới lên). Không có trạng thái "xem lời" riêng (lời luôn ở nửa phải) → hai trạng thái trùng nhau
 function useGeo(W: number, H: number, top: number, bottomInset: number) {
   return useMemo(() => {
+    const SHORT = 0.125;
+    const cut = (s: number, e: number) => [s + (e - s) * SHORT, e - (e - s) * SHORT] as const;
+    if (W > H) {
+      const R = Math.round(Math.min(H * 0.74, W * 0.36));
+      const r = R + 18;
+      const rt = r + 14;
+      const cx0 = Math.round(W * 0.4 - R);
+      const cy0 = H / 2;
+      const th = Math.asin(Math.min(1, (H / 2 - M) / r));
+      const tht = Math.asin(Math.min(1, (H / 2 - M) / rt));
+      const [a0, a1] = cut(th, -th);
+      const [ta0, ta1] = cut(tht, -tht);
+      return {
+        land: true,
+        R, r, rt, rimY: 0,
+        cx0, cy0, cx1: cx0, cy1: cy0,
+        a0, a1, b0: a0, b1: a1,
+        ta0, ta1, tb0: ta0, tb1: ta1,
+        gx0a: 0, gx1a: 0, gx0b: 0, gx1b: 0,
+        sdx0: -(cx0 + R + 40), sdy0: 0, sdy1: 0,
+        panelL: cx0 + rt + 30, // nửa phải (tên bài, lời, nút) bắt đầu sau số giờ của thanh thời gian
+        yLeft: 0, yRight: 0, yEnds1: 0, yLow1: 0,
+      };
+    }
     const R = Math.round(Math.min(W * 1.46, H - 270 - bottomInset * 0.5));
     const r = R + 18; // thanh thời gian: ngay ngoài rìa đĩa
     const rt = r + 14; // số giờ: ngoài thanh thời gian
     const rimY = top + 96;
     const half = (rr: number) => Math.asin(Math.min(1, (W / 2 - M) / rr));
-    // Thanh thời gian dài 3/4 cung chạy hết bề ngang màn hình: cắt bớt đều hai đầu (mỗi đầu 1/8)
-    const SHORT = 0.125;
-    const cut = (s: number, e: number) => [s + (e - s) * SHORT, e - (e - s) * SHORT] as const;
+    // Thanh thời gian dài 3/4 cung chạy hết bề ngang màn hình: cắt bớt đều hai đầu (mỗi đầu 1/8) — cut() ở đầu hàm
     const A0 = Math.acos(Math.min(1, M / r));
     const A1 = Math.acos(Math.min(1, (W - M) / r));
     const [a0, a1] = cut(A0, A1);
@@ -95,7 +121,10 @@ function useGeo(W: number, H: number, top: number, bottomInset: number) {
     const [ta0, ta1] = cut(Math.acos(Math.min(1, M / rt)), Math.acos(Math.min(1, (W - M) / rt)));
     const [tb0, tb1] = cut(Math.PI / 2 + half(rt), Math.PI / 2 - half(rt));
     const g = {
+      land: false,
       R, r, rt, rimY,
+      cx0: 0,
+      cy0: 0,
       cx1: W / 2,
       cy1: rimY - R,
       // cung thời gian: [đầu bài, cuối bài] ở hai trạng thái (0 = xem đĩa, 1 = xem lời)
@@ -107,6 +136,10 @@ function useGeo(W: number, H: number, top: number, bottomInset: number) {
       gx1a: r * Math.cos(a1),
       gx0b: W / 2 + r * Math.cos(b0),
       gx1b: W / 2 + r * Math.cos(b1),
+      sdx0: -(R + 40) / Math.SQRT2,
+      sdy0: -(R + 40) / Math.SQRT2,
+      sdy1: -(rimY + 40),
+      panelL: 0,
     };
     return {
       ...g,
@@ -157,12 +190,42 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
   const reduced = useReducedMotion();
   const { R } = g;
   const LR = R * LABEL;
+  const land = g.land;
 
-  // ---- đĩa ⇄ lời
-  const lp = useSharedValue(p.lyricsOpen ? 1 : 0);
+  // ---- đĩa ⇄ lời (màn ngang: đĩa luôn ở bên trái, lời ở nửa phải → không có trạng thái "đĩa trượt lên")
+  const lp = useSharedValue(p.lyricsOpen && !land ? 1 : 0);
   useEffect(() => {
-    lp.value = withTiming(p.lyricsOpen ? 1 : 0, reduced ? { duration: 200 } : MOVE);
-  }, [p.lyricsOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+    lp.value = withTiming(p.lyricsOpen && !land ? 1 : 0, reduced ? { duration: 200 } : MOVE);
+  }, [p.lyricsOpen, land]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Xoay ngang: tự mở lời (bố cục đĩa trái · lời phải); xoay dọc lại: trả về đúng như trước khi xoay
+  const lyrBefore = useRef<boolean | null>(null);
+  const firstLand = useRef(true);
+  useEffect(() => {
+    if (land) {
+      if (lyrBefore.current === null) {
+        lyrBefore.current = p.lyricsOpen;
+        if (!p.lyricsOpen) p.setLyricsOpen(true);
+      }
+    } else if (lyrBefore.current !== null) {
+      const before = lyrBefore.current;
+      lyrBefore.current = null;
+      p.setLyricsOpen(before);
+    }
+  }, [land]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Hiệu ứng lúc xoay máy: đĩa trượt vào từ bên trái, phần còn lại (nửa phải / nút) trượt nhẹ từ bên phải và hiện dần.
+  // Bố cục đổi ngay khung đầu tiên sau khi xoay (iOS đã xoay cả màn hình) → chỉ cần "đặt vào chỗ" cho êm, không giật cục
+  const ori = useSharedValue(1);
+  useEffect(() => {
+    if (firstLand.current) {
+      firstLand.current = false;
+      return;
+    }
+    if (reduced) return;
+    ori.value = 0;
+    ori.value = withTiming(1, { duration: 420, easing: Easing.bezier(0.23, 1, 0.32, 1) });
+  }, [land]); // eslint-disable-line react-hooks/exhaustive-deps
+  const discIn = useAnimatedStyle(() => ({ opacity: 0.35 + 0.65 * ori.value, transform: [{ translateX: (1 - ori.value) * -56 }] }));
+  const restIn = useAnimatedStyle(() => ({ opacity: ori.value, transform: [{ translateX: (1 - ori.value) * 36 }] }));
   // Khung lời dựng SẴN (ẩn) ngay khi player hiện ra, lời cũng được tải sẵn (NowPlayingScreen) → vuốt lên là chữ có liền,
   // không còn khoảng "đang tải" / nháy lúc khung lời mới dựng và đo các dòng
   // ...nhưng dựng SAU khi player mở xong (~0,15s sau), không dựng ngay lúc bắt đầu mở: dựng cả trăm dòng chữ đúng lúc hiệu ứng
@@ -322,7 +385,7 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
   const seekRef = useRef({ seekTo: p.seekTo, duration: p.duration });
   seekRef.current = { seekTo: p.seekTo, duration: p.duration };
   const seekGest = useMemo(() => {
-    const { r, cx1, cy1, a0, a1, b0, b1 } = g;
+    const { r, cx0, cy0, cx1, cy1, a0, a1, b0, b1 } = g;
     const hold = (v: number) => {
       holdRef.current = { v, t: Date.now() };
     };
@@ -339,8 +402,8 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
     };
     const local = (x: number, y: number, k: number) => {
       'worklet';
-      const lx = x - k * cx1;
-      const ly = y - k * cy1;
+      const lx = x - mix(cx0, cx1, k);
+      const ly = y - mix(cy0, cy1, k);
       return { lx, ly, s: k > 0.5 ? b0 : a0, e: k > 0.5 ? b1 : a1 };
     };
     const raw = (x: number, y: number, k: number) => {
@@ -438,15 +501,16 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
       <StatusBar barStyle="light-content" />
 
       {/* Đĩa (chỉ để nhìn, không nhận chạm) */}
-      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, discIn]}>
         {dbg.disc && <DiscUnder g={g} lp={lp} sw={sw} />}
         {dbg.label && <VinylLabel id={disc.id} thumb={disc.thumb} color={disc.color} LR={LR} g={g} lp={lp} sw={sw} rot={rot} />}
         {dbg.disc && <DiscOver g={g} lp={lp} sw={sw} />}
-        {dbg.ghost && <GhostArc g={g} lp={lp} sw={sw} W={W} H={H} />}
-      </View>
+        {/* vòng giả cắt theo bề ngang chỉ khớp với thanh nằm ngang của màn dọc */}
+        {dbg.ghost && !land && <GhostArc g={g} lp={lp} sw={sw} W={W} H={H} />}
+      </Animated.View>
 
       {/* Lớp nhận cử chỉ ở chỗ trống */}
-      {p.lyricsOpen ? (
+      {p.lyricsOpen && !land ? (
         <GestureDetector key="down" gesture={down}>
           <View style={StyleSheet.absoluteFill}>
             <GestureDetector gesture={seekA}>
@@ -468,9 +532,17 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
         </CloseZone>
       )}
 
-      {fg && dbg.arc && <VinylArc g={g} lp={lp} accent={accent} scrubSV={scrubSV} posSV={posSV} holdRef={holdRef} playing={p.isPlaying} duration={p.duration} loading={p.loading} failed={p.failed} />}
+      {fg && dbg.arc && (
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, discIn]}>
+          <VinylArc g={g} lp={lp} accent={accent} scrubSV={scrubSV} posSV={posSV} holdRef={holdRef} playing={p.isPlaying} duration={p.duration} loading={p.loading} failed={p.failed} />
+        </Animated.View>
+      )}
 
-      {lyricsLive && (
+      {land && (
+        <LandPanel p={p} g={g} W={W} insets={insets} lyricsLive={lyricsLive} playBg={playBg} style={restIn} />
+      )}
+
+      {!land && lyricsLive && (
         <Animated.View
           pointerEvents={p.lyricsOpen && !p.noLyrics ? 'auto' : 'none'}
           style={[{ position: 'absolute', top: lyricsTop, left: 20, right: 20, bottom: H - iconsTop + 2 }, lyricsStyle]}
@@ -479,6 +551,8 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
         </Animated.View>
       )}
 
+      {!land && (
+      <Animated.View pointerEvents="box-none" style={[StyleSheet.absoluteFill, restIn]}>
       <View style={[styles.grabberWrap, { top: insets.top + 4 }]} pointerEvents="box-none">
         <Pressable testID="player-close" onPress={p.onClose} hitSlop={14} style={{ paddingVertical: 8, paddingHorizontal: 24 }}>
           <View style={styles.grabber} />
@@ -526,6 +600,8 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
           </Btn>
         </View>
       </View>
+      </Animated.View>
+      )}
 
       {p.children}
     </View>
@@ -533,6 +609,78 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
 });
 
 const PILL = 46;
+
+// ---- Nửa phải của màn NGANG: trên cùng là tên bài + 4 nút (lời · hàng chờ · trộn · lặp), giữa là lời bài hát (tắt lời thì
+// tên bài to ở giữa), dưới cùng là viên kính ( ❤️ | hiệu ứng ) + 3 nút. Âm lượng: dùng nút cứng của máy (màn ngang thấp)
+function LandPanel({
+  p, g, W, insets, lyricsLive, playBg, style,
+}: {
+  p: VinylProps; g: Geo; W: number; insets: { top: number; bottom: number; left: number; right: number }; lyricsLive: boolean;
+  playBg: ReturnType<typeof useAnimatedStyle>; style: ReturnType<typeof useAnimatedStyle>;
+}) {
+  const left = g.panelL;
+  const right = W - Math.max(insets.right, 12) - 8;
+  const showLyrics = p.lyricsOpen && !p.noLyrics;
+  // đổi lời ⇄ tên bài to: mờ chéo nhẹ
+  const lyrK = useSharedValue(showLyrics ? 1 : 0);
+  useEffect(() => {
+    lyrK.value = withTiming(showLyrics ? 1 : 0, { duration: 260, easing: Easing.bezier(0.23, 1, 0.32, 1) });
+  }, [showLyrics]); // eslint-disable-line react-hooks/exhaustive-deps
+  const lyrStyle = useAnimatedStyle(() => ({ opacity: lyrK.value, transform: [{ translateY: (1 - lyrK.value) * 18 }] }));
+  const bigStyle = useAnimatedStyle(() => ({ opacity: 1 - lyrK.value, transform: [{ scale: 0.96 + 0.04 * (1 - lyrK.value) }] }));
+  return (
+    <Animated.View
+      pointerEvents="box-none"
+      style={[{ position: 'absolute', left, width: Math.max(0, right - left), top: 0, bottom: 0, paddingTop: Math.max(insets.top, 6), paddingBottom: Math.max(insets.bottom, 10) }, style]}
+    >
+      <View style={{ alignItems: 'center' }} pointerEvents="box-none">
+        <Pressable testID="player-close" onPress={p.onClose} hitSlop={14} style={{ paddingVertical: 6, paddingHorizontal: 24 }}>
+          <View style={styles.grabber} />
+        </Pressable>
+      </View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }} pointerEvents="box-none">
+        <View style={{ flex: 1, minWidth: 0 }} pointerEvents="none">
+          <Animated.View style={lyrStyle}>
+            <Text numberOfLines={1} style={styles.artist}>{p.artist}</Text>
+            <Text numberOfLines={1} style={[styles.title, { fontSize: 20 }]}>{p.title}</Text>
+          </Animated.View>
+        </View>
+        <View style={{ flexDirection: 'row' }}>{p.icons}</View>
+      </View>
+      <View style={{ flex: 1, marginTop: 4 }} pointerEvents="box-none">
+        {lyricsLive && (
+          <Animated.View pointerEvents={showLyrics ? 'auto' : 'none'} style={[StyleSheet.absoluteFill, lyrStyle]}>
+            {p.lyrics}
+          </Animated.View>
+        )}
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { justifyContent: 'center' }, bigStyle]}>
+          <Text numberOfLines={1} style={[styles.artist, { fontSize: 16 }]}>{p.artist}</Text>
+          <Text numberOfLines={2} style={[styles.title, { fontSize: 30, textAlign: 'left' }]}>{p.title}</Text>
+        </Animated.View>
+      </View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, marginTop: 6 }} pointerEvents="box-none">
+        <View style={styles.pill}>
+          <Frost radius={PILL / 2} />
+          <View style={styles.pillCell}>{p.like}</View>
+          <View style={styles.pillSep} />
+          <View style={styles.pillCell}>{p.fx}</View>
+        </View>
+        <View style={styles.controls}>
+          <Frost radius={22} />
+          <Btn onPress={p.prev}>
+            <SkipGlyph dir="back" size={24} color={TEXT} />
+          </Btn>
+          <Btn onPress={p.togglePlay} bg={playBg}>
+            {p.loading ? <ActivityIndicator color="#1b1510" /> : <PlayPauseGlyph playing={p.isPlaying} size={26} color="#1b1510" />}
+          </Btn>
+          <Btn onPress={p.next}>
+            <SkipGlyph dir="forward" size={24} color={TEXT} />
+          </Btn>
+        </View>
+      </View>
+    </Animated.View>
+  );
+}
 
 // Kính tối hơn nền một chút. KHÔNG dùng lớp làm nhoè thật (BlurView): nền khói phía sau vốn đã mềm nên nhoè thêm nhìn gần như
 // không khác, mà mỗi lớp nhoè phải tính lại MỖI khung hình vì nền khói luôn chuyển động — 3 lớp như vậy làm GPU quá tải, nhất là
@@ -635,11 +783,11 @@ const VinylBackdrop = React.memo(function VinylBackdrop({ color, grad, run, smok
 const VinylLabel = React.memo(function VinylLabel({
   id, thumb, color, LR, g, lp, sw, rot,
 }: { id: string; thumb?: string; color?: string; LR: number; g: Geo; lp: SharedValue<number>; sw: SharedValue<number>; rot: SharedValue<number> }) {
-  const { cx1, cy1, R, rimY } = g;
+  const { cx0, cy0, cx1, cy1, sdx0, sdy0, sdy1 } = g;
   const style = useAnimatedStyle(() => ({
     transform: [
-      { translateX: lp.value * cx1 + swapDX(R, lp.value) * sw.value },
-      { translateY: lp.value * cy1 + swapDY(R, rimY, lp.value) * sw.value },
+      { translateX: mix(cx0, cx1, lp.value) + swapDX(sdx0, lp.value) * sw.value },
+      { translateY: mix(cy0, cy1, lp.value) + swapDY(sdy0, sdy1, lp.value) * sw.value },
       { rotate: `${rot.value}deg` },
     ],
   }));
@@ -693,11 +841,11 @@ function Btn({ onPress, bg, children }: { onPress: () => void; bg?: ReturnType<t
 //  - viền tròn do hệ thống vẽ, không tốn ảnh to, GPU nhẹ hơn hai khung Skia toàn màn hình
 // Cả khối dời theo lp (đĩa ⇄ lời) và sw (đổi bài) giống nhãn ảnh
 function useDiscStyle(g: Geo, lp: SharedValue<number>, sw: SharedValue<number>) {
-  const { cx1, cy1, R, rimY } = g;
+  const { cx0, cy0, cx1, cy1, sdx0, sdy0, sdy1 } = g;
   return useAnimatedStyle(() => ({
     transform: [
-      { translateX: lp.value * cx1 + swapDX(R, lp.value) * sw.value },
-      { translateY: lp.value * cy1 + swapDY(R, rimY, lp.value) * sw.value },
+      { translateX: mix(cx0, cx1, lp.value) + swapDX(sdx0, lp.value) * sw.value },
+      { translateY: mix(cy0, cy1, lp.value) + swapDY(sdy0, sdy1, lp.value) * sw.value },
     ],
   }));
 }
@@ -820,19 +968,19 @@ const VinylArc = React.memo(function VinylArc({
   // ---- vẽ theo lp (vị trí nút: posSV, trên luồng giao diện)
   const endSV = useDerivedValue(() => posSV.value);
   const knobR = useDerivedValue(() => (scrubSV.value >= 0 ? 9 : 6.5));
-  const { r, rt, cx1, cy1, a0, a1, b0, b1, ta0, ta1, tb0, tb1 } = g;
+  const { r, rt, cx0, cy0, cx1, cy1, a0, a1, b0, b1, ta0, ta1, tb0, tb1 } = g;
   // Player đóng thì bị ẩn hẳn (display: none). Mở lại, vùng vẽ Skia không tự vẽ lại cho tới khi có giá trị đổi:
   // đang phát thì giờ chạy liên tục nên thấy ngay, đang DỪNG thì thanh thời gian biến mất cho tới lúc bấm phát.
   // Đọc playerProgress ở đây: suốt lúc player mở / đóng, thanh được vẽ lại từng khung hình → luôn hiện, kể cả khi dừng nhạc
   const bar = useDerivedValue(() => {
     // (playerProgress không bao giờ > 2: chỉ để thanh "phụ thuộc" vào nó; viết thành phép so sánh để bản build không lược bỏ)
     const k = lp.value + (playerProgress.value > 2 ? 1 : 0);
-    return arcPath(k * cx1, k * cy1, r, mix(a0, b0, k), mix(a1, b1, k));
+    return arcPath(mix(cx0, cx1, k), mix(cy0, cy1, k), r, mix(a0, b0, k), mix(a1, b1, k));
   });
   const textPath = useDerivedValue(() => {
     // (playerProgress không bao giờ > 2: chỉ để thanh "phụ thuộc" vào nó; viết thành phép so sánh để bản build không lược bỏ)
     const k = lp.value + (playerProgress.value > 2 ? 1 : 0);
-    return arcPath(k * cx1, k * cy1, rt, mix(ta0, tb0, k), mix(ta1, tb1, k));
+    return arcPath(mix(cx0, cx1, k), mix(cy0, cy1, k), rt, mix(ta0, tb0, k), mix(ta1, tb1, k));
   });
   const rightOff = useDerivedValue(() => {
     const k = lp.value;
@@ -841,12 +989,12 @@ const VinylArc = React.memo(function VinylArc({
   const knobX = useDerivedValue(() => {
     const k = lp.value;
     const a = mix(mix(a0, b0, k), mix(a1, b1, k), posSV.value);
-    return k * cx1 + r * Math.cos(a);
+    return mix(cx0, cx1, k) + r * Math.cos(a);
   });
   const knobY = useDerivedValue(() => {
     const k = lp.value;
     const a = mix(mix(a0, b0, k), mix(a1, b1, k), posSV.value);
-    return k * cy1 + r * Math.sin(a);
+    return mix(cy0, cy1, k) + r * Math.sin(a);
   });
 
   return (
