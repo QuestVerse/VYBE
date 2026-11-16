@@ -6,6 +6,7 @@ import { markBackupDirty, themeBridge } from '../data/backup';
 import { defaultTheme } from './defaultTheme';
 import { AmbientPresetId, PRESETS, ThemePresetId } from './presets';
 import { CoverTint, useCoverTint } from './coverTint';
+import { smokePalette, SMOKE_TONES, type SmokeTone } from './smokeTones';
 import { log as appLog } from '../data/applog';
 import { Edge, HomeSection, LibraryLayout, MiniAnchor, Position, TabId, Theme, TrendingRange } from './types';
 
@@ -28,7 +29,9 @@ function derive(t: Theme): Theme {
   // Bộ 'blue' cũ nay là 'ocean'
   const id = (t.preset as string) === 'blue' ? 'ocean' : t.preset;
   const preset: ThemePresetId = id in PRESETS ? id : defaultTheme.preset;
-  const palette = PRESETS[preset];
+  // Khói màu: nền / thẻ / kính / màu nhấn theo dải màu đã chọn ('cover' thì withCover phủ màu ảnh bìa lên sau)
+  const tone = t.effects?.smokeTone;
+  const palette = preset === 'smoke' && tone && tone !== 'cover' ? { ...PRESETS.smoke, ...smokePalette(tone) } : PRESETS[preset];
   // Nền là ảnh/video: thẻ dùng màu trong suốt một phần để lộ nền phía sau (trông như kính, cuộn vẫn mượt)
   const media = t.background.type !== 'preset' && !!t.background.uri;
   const colors = media ? { ...palette, surface: palette.card } : palette;
@@ -36,7 +39,8 @@ function derive(t: Theme): Theme {
 }
 // Bộ "Theo ảnh bìa": phủ màu lấy từ ảnh bìa bài đang phát lên bảng màu gốc
 function withCover(t: Theme, tint: CoverTint | null): Theme {
-  if (t.preset !== 'cover' || !tint) return t;
+  const smokeCover = t.preset === 'smoke' && t.effects.smokeTone === 'cover';
+  if ((t.preset !== 'cover' && !smokeCover) || !tint) return t;
   const media = t.background.type !== 'preset' && !!t.background.uri;
   const colors = { ...t.colors, ...tint, surface: media ? tint.card : tint.surface };
   return { ...t, colors, background: { ...t.background, color: tint.bg } };
@@ -109,6 +113,12 @@ function sanitize(t: Theme): Theme {
       material: ['clear', 'frost', 'smoke', 'matte', 'neon'].includes(t.glass.material as string) ? t.glass.material : 'clear',
       neon: typeof t.glass.neon === 'string' && /^(#[0-9a-fA-F]{6})?$/.test(t.glass.neon) ? t.glass.neon : '',
     },
+    effects: {
+      ...t.effects,
+      meteorLevel: clampN(t.effects.meteorLevel ?? 1, 0, 3, 1),
+      smokeTone: SMOKE_TONES.includes(t.effects.smokeTone as SmokeTone) ? t.effects.smokeTone : 'coffee',
+      smokeSpeed: clampN(t.effects.smokeSpeed ?? 1, 0.3, 2, 1),
+    },
     language: (LANGS as readonly string[]).includes(t.language) ? t.language : d.language,
     dock: {
       ...t.dock,
@@ -168,6 +178,8 @@ interface ThemeContextValue {
   setGlassNeon: (c: string) => void; // màu đèn neon ('' = màu nhấn theme)
   setAmbient: (preset: AmbientPresetId, on: boolean) => void;
   setMeteorLevel: (level: number) => void;
+  setSmokeTone: (tone: SmokeTone) => void;
+  setSmokeSpeed: (speed: number) => void;
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
@@ -283,6 +295,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       setAmbient: (preset, on) =>
         setThemeState((t) => ({ ...t, effects: { ...t.effects, ambient: { ...t.effects.ambient, [preset]: on } } })),
       setMeteorLevel: (level) => setThemeState((t) => ({ ...t, effects: { ...t.effects, meteorLevel: Math.max(0, Math.min(3, Math.round(level))) } })),
+      // derive(): đổi dải màu thì bảng màu giao diện (nền, màu nhấn, kính) cũng đổi theo
+      setSmokeTone: (smokeTone) => setThemeState((t) => derive({ ...t, effects: { ...t.effects, smokeTone } })),
+      setSmokeSpeed: (speed) => setThemeState((t) => ({ ...t, effects: { ...t.effects, smokeSpeed: Math.max(0.3, Math.min(2, Math.round(speed * 100) / 100)) } })),
     };
   }, [theme, landscape, coverTint]);
 

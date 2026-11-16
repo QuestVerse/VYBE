@@ -1,11 +1,11 @@
 // Các bộ màu có sẵn. Mọi màn hình (trừ Player) lấy màu từ đây qua theme.colors.
 // Thêm bộ màu mới: thêm id vào ThemePresetId, thêm một mục vào PRESETS và tên vào PRESET_ORDER.
 
-export type ThemePresetId = 'dark' | 'light' | 'green' | 'ocean' | 'latte' | 'snow' | 'sakura' | 'meteor' | 'starry' | 'aurora' | 'rain' | 'neon' | 'cover';
+export type ThemePresetId = 'dark' | 'light' | 'green' | 'ocean' | 'latte' | 'snow' | 'sakura' | 'meteor' | 'starry' | 'aurora' | 'rain' | 'neon' | 'smoke' | 'cover';
 
 // Các bộ có hiệu ứng nền chạy liên tục (bật/tắt bằng công tắc Hiệu ứng nền, nhớ riêng từng bộ)
-export type AmbientPresetId = 'snow' | 'green' | 'ocean' | 'latte' | 'sakura' | 'meteor' | 'starry' | 'aurora' | 'rain' | 'neon';
-export const AMBIENT_PRESETS: AmbientPresetId[] = ['snow', 'green', 'ocean', 'latte', 'sakura', 'meteor', 'starry', 'aurora', 'rain', 'neon'];
+export type AmbientPresetId = 'snow' | 'green' | 'ocean' | 'latte' | 'sakura' | 'meteor' | 'starry' | 'aurora' | 'rain' | 'neon' | 'smoke';
+export const AMBIENT_PRESETS: AmbientPresetId[] = ['snow', 'green', 'ocean', 'latte', 'sakura', 'meteor', 'starry', 'aurora', 'rain', 'neon', 'smoke'];
 
 export interface Palette {
   bg: string; // nền của app
@@ -223,6 +223,23 @@ export const PRESETS: Record<ThemePresetId, Palette> = {
     statusBar: 'light-content',
     switchOff: '#33204F',
   },
+  // Khói màu: nền khói chuyển động (shader), mặc định dải cà phê. Nền / thẻ / kính / màu nhấn đổi theo dải màu người dùng chọn (smokeTones.ts)
+  smoke: {
+    bg: '#120905',
+    surface: '#2C160B',
+    card: 'rgba(44,22,11,0.58)',
+    text: '#FBF4EC',
+    textSecondary: '#C9B5A4',
+    accent: '#E8A862',
+    onAccent: '#1A0E06',
+    border: 'rgba(255,240,225,0.13)',
+    skeleton: 'rgba(255,240,225,0.08)',
+    glass: 'rgba(39,20,8,0.55)',
+    glassRgb: '39,20,8',
+    glassTint: 'dark',
+    statusBar: 'light-content',
+    switchOff: '#3E2410',
+  },
   // Theo màu ảnh bìa: bảng màu gốc (tối); khi đang nghe nhạc, nền + màu nhấn lấy từ ảnh bìa bài đang phát (coverTint.ts)
   cover: {
     bg: '#101014',
@@ -242,4 +259,4 @@ export const PRESETS: Record<ThemePresetId, Palette> = {
   },
 };
 
-export const PRESET_ORDER: ThemePresetId[] = ['dark', 'light', 'green', 'ocean', 'latte', 'snow', 'sakura', 'meteor', 'starry', 'aurora', 'rain', 'neon', 'cover'];
+export const PRESET_ORDER: ThemePresetId[] = ['dark', 'light', 'green', 'ocean', 'latte', 'snow', 'sakura', 'meteor', 'starry', 'aurora', 'rain', 'neon', 'smoke', 'cover'];

@@ -13,6 +13,9 @@ import { useT } from '../i18n';
 import { copyIntoApp, deleteAppFile } from '../data/files';
 import { useScreenSize } from '../components/ScreenSize';
 import { useRenderProbe } from '../components/JankMonitor';
+import { LinearGradient } from 'expo-linear-gradient';
+import Animated, { useAnimatedStyle, withTiming } from 'react-native-reanimated';
+import { SMOKE_COLORS, SMOKE_TONES, type SmokeTone } from '../theme/smokeTones';
 
 const PAD = 16;
 const GAP = 12;
@@ -92,6 +95,13 @@ function MiniScreen({ p, id, width, h }: { p: Palette; id: ThemePresetId; width:
           ))}
         </>
       )}
+      {id === 'smoke' && (
+        <>
+          <View style={{ position: 'absolute', left: -width * 0.15, top: h * 0.15, width: width * 0.8, height: h * 0.45, borderRadius: h, backgroundColor: 'rgba(158,97,33,0.45)', transform: [{ rotate: '-18deg' }] }} />
+          <View style={{ position: 'absolute', left: width * 0.4, top: h * 0.5, width: width * 0.75, height: h * 0.35, borderRadius: h, backgroundColor: 'rgba(92,51,19,0.6)', transform: [{ rotate: '12deg' }] }} />
+          <View style={{ position: 'absolute', left: width * 0.2, top: h * 0.05, width: width * 0.35, height: h * 0.18, borderRadius: h, backgroundColor: 'rgba(232,168,98,0.25)' }} />
+        </>
+      )}
       {id === 'cover' && (
         <View style={{ position: 'absolute', right: 10, top: 10, flexDirection: 'row', gap: 3 }}>
           {['#E2574C', '#F2B134', '#3E8EDE'].map((c) => (
@@ -163,7 +173,7 @@ function PresetCard({ id, selected, width, onPress }: {
 const NEON_COLORS = ['', '#7EF0FF', '#FF5FD2', '#B78CFF', '#6CFF9E', '#FFD15C', '#FF8A3D', '#FF4D6D'];
 
 export function ThemeStudioScreen() {
-  const { theme, setBackground, setGlassBlur, setGlassMaterial, setGlassNeon, setAmbient, setMeteorLevel } = useTheme();
+  const { theme, setBackground, setGlassBlur, setGlassMaterial, setGlassNeon, setAmbient, setMeteorLevel, setSmokeTone, setSmokeSpeed } = useTheme();
   const { changePreset } = useThemeTransition();
   const scheme = useColorScheme();
   const t = useT();
@@ -179,6 +189,9 @@ export function ThemeStudioScreen() {
 
   const dimS = useThrottle((v: number) => setBackground({ dim: Math.round(v * 0.8 * 100) / 100 }));
   const blurS = useThrottle((v: number) => setGlassBlur(Math.round(v * 100)));
+  // thanh 0..1 ↔ tốc độ khói 0.3..2
+  const smokeS = useThrottle((v: number) => setSmokeSpeed(0.3 + v * 1.7));
+  const smokeSpeed = theme.effects.smokeSpeed ?? 1;
 
   const cols = width >= 600 ? 3 : 2;
   const cardW = Math.floor((Math.min(width, 520) - PAD * 2 - GAP * (cols - 1)) / cols);
@@ -301,6 +314,39 @@ export function ThemeStudioScreen() {
           </>
         )}
 
+        {/* Bộ Khói màu: chọn dải màu (đổi cả nền khói lẫn màu giao diện) + tốc độ khói */}
+        {theme.preset === 'smoke' && (
+          <>
+            <Text style={[styles.label, { color: text, marginTop: 16 }]}>{t('studio.smokeTone')}</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 10 }}>
+              {SMOKE_TONES.map((tone) => (
+                <ToneChip
+                  key={tone}
+                  tone={tone}
+                  label={t(`studio.smokeTone.${tone}`)}
+                  on={(theme.effects.smokeTone ?? 'coffee') === tone}
+                  ring={accent}
+                  text={text}
+                  dim={textSecondary}
+                  onPress={() => setSmokeTone(tone)}
+                />
+              ))}
+            </View>
+            {(theme.effects.smokeTone ?? 'coffee') === 'cover' && (
+              <Text style={{ color: textSecondary, fontSize: 12, marginTop: 8 }}>{t('studio.coverHint')}</Text>
+            )}
+            {theme.effects.ambient.smoke && (
+              <>
+                <View style={styles.sliderHead}>
+                  <Text style={[styles.label, { color: text }]}>{t('studio.smokeSpeed')}</Text>
+                  <Text style={{ color: textSecondary, fontSize: 13 }}>{smokeSpeed.toFixed(1)}×</Text>
+                </View>
+                <Slider value={(smokeSpeed - 0.3) / 1.7} thickness={6} fill={accent} track={border} onChange={smokeS.change} onCommit={smokeS.commit} />
+              </>
+            )}
+          </>
+        )}
+
         {theme.preset === 'cover' && <Text style={{ color: textSecondary, fontSize: 12, marginTop: 14 }}>{t('studio.coverHint')}</Text>}
 
         {/* Nền */}
@@ -400,3 +446,25 @@ const styles = StyleSheet.create({
   label: { fontSize: 15, fontWeight: '700' },
   switchRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 18 },
 });
+
+// Ô chọn dải màu khói: chấm tròn tô chuyển màu của dải (Theo ảnh bìa: ba màu mẫu), vòng màu nhấn hiện / tắt êm khi chọn
+const rgbHex = (c: number[]) => '#' + c.map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
+function ToneChip({ tone, label, on, ring, text, dim, onPress }: { tone: SmokeTone; label: string; on: boolean; ring: string; text: string; dim: string; onPress: () => void }) {
+  const colors: [string, string, string] =
+    tone === 'cover' ? ['#E2574C', '#F2B134', '#3E8EDE'] : [rgbHex(SMOKE_COLORS[tone].c[3]), rgbHex(SMOKE_COLORS[tone].c[1]), rgbHex(SMOKE_COLORS[tone].c[2])];
+  const ringStyle = useAnimatedStyle(() => ({
+    opacity: withTiming(on ? 1 : 0, { duration: 180 }),
+    transform: [{ scale: withTiming(on ? 1 : 0.86, { duration: 220 }) }],
+  }));
+  return (
+    <Pressable onPress={onPress} hitSlop={4} style={({ pressed }) => ({ width: 58, alignItems: 'center', transform: [{ scale: pressed ? 0.94 : 1 }] })}>
+      <View style={{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center' }}>
+        <Animated.View style={[StyleSheet.absoluteFill, { borderRadius: 24, borderWidth: 2, borderColor: ring }, ringStyle]} />
+        <LinearGradient colors={colors} start={{ x: 0, y: 1 }} end={{ x: 1, y: 0 }} style={{ width: 38, height: 38, borderRadius: 19 }} />
+      </View>
+      <Text numberOfLines={1} style={{ color: on ? text : dim, fontSize: 11, fontWeight: on ? '700' : '500', marginTop: 4 }}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}

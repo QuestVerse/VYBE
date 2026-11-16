@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { AppState, StyleSheet, View } from 'react-native';
 import { BlendMode, Canvas, Fill, ImageSVG, Picture, Shader, Skia, TileMode, type SkImage } from '@shopify/react-native-skia';
-import { makeMutable, useDerivedValue, useFrameCallback } from 'react-native-reanimated';
+import { Easing, makeMutable, useDerivedValue, useFrameCallback, useSharedValue, withTiming } from 'react-native-reanimated';
 
 // Đồng hồ chung cho mọi lớp hiệu ứng: hạt rơi / sao băng tính hoàn toàn theo thời gian t, nên hai lớp cùng một t
 // vẽ ra y hệt nhau. Nhờ vậy bản sao nền trong trang đang vuốt quay lại khớp đúng với nền chung phía sau
@@ -36,6 +36,9 @@ import { drawBubble, drawFish, FISH_BODY, FISH_COLORS, FISH_FIN, FISH_TAIL } fro
 import { useScreenSize } from '../../components/ScreenSize';
 import { starryBand, starryShader } from './starry';
 import { auroraSkySvg, LOOSE_PETAL_PATH, meteorSkySvg, neonSkySvg, PETAL_PATH, rainGlassSvg } from './scenes';
+import { smokeShader } from './smoke';
+import { smokeUniformColors } from '../smokeTones';
+import { useCoverTint } from '../coverTint';
 
 // Hiệu ứng rơi nhẹ liên tục phía sau nội dung (bật/tắt trong trang Giao diện):
 //  - bộ Snow: bông tuyết
@@ -91,6 +94,8 @@ function pickEffect(theme: ReturnType<typeof useTheme>['theme']): React.ReactEle
   if (theme.preset === 'aurora' && on.aurora) return <AuroraRibbons />;
   if (theme.preset === 'rain' && on.rain) return <RainOnGlass />;
   if (theme.preset === 'neon' && on.neon) return <NeonGrid />;
+  // Khói phủ kín nền nên chỉ chạy khi nền là màu của bộ (người dùng đặt ảnh / video thì để thấy ảnh của họ)
+  if (theme.preset === 'smoke' && on.smoke && !onMedia) return <SmokeSky live />;
   return null;
 }
 
@@ -101,6 +106,8 @@ export function ThemeScene() {
   // Trời sao: bản đứng yên của cùng shader (sao không lấp lánh, không trôi). Bật hiệu ứng thì bản chạy được vẽ đè lên
   // Bật hiệu ứng: nền chỉ có lớp sao xa, hai lớp vừa / gần do StarryDrift vẽ và cho trôi
   if (theme.preset === 'starry' && theme.background.type === 'preset') return <StarrySky full={!theme.effects.ambient.starry} />;
+  // Khói màu: luôn có một khung khói đứng yên làm nền (tắt hiệu ứng, trang đang vuốt quay lại...). Bật hiệu ứng thì lớp khói chạy phủ lên
+  if (theme.preset === 'smoke' && theme.background.type === 'preset') return <SmokeSky live={false} />;
   return <SvgScene />;
 }
 
@@ -978,5 +985,93 @@ function NeonGrid() {
       </View>
       <Layer picture={picture} />
     </>
+  );
+}
+
+// ---------- Khói màu: shader khói (smoke.ts, dùng chung với player đĩa than) làm nền cả app ----------
+// Chống lag như player đĩa than: vẽ ở 1/5 kích thước rồi phóng to (khói mềm nên nhìn y hệt), 30 khung / giây,
+// dừng khi mở player / app ở nền (RunningContext). Đồng hồ khói dùng chung cho mọi lớp → lớp chạy trong trang
+// đang vuốt quay lại khớp đúng với nền chung. Đổi dải màu: màu chuyển dần trong 1 giây
+const SMOKE_DIV = 5;
+const smokeTime = makeMutable(3);
+const smokeAcc = makeMutable(0);
+function SmokeSky({ live }: { live: boolean }) {
+  const { theme } = useTheme();
+  const { width, height } = useScreenSize();
+  const running = useContext(RunningContext) && live;
+  const effect = useMemo(() => smokeShader(), []);
+  const cw = Math.ceil(width / SMOKE_DIV);
+  const ch = Math.ceil(height / SMOKE_DIV);
+  const speed = useSharedValue(theme.effects.smokeSpeed ?? 1);
+  useEffect(() => {
+    speed.value = theme.effects.smokeSpeed ?? 1;
+  }, [theme.effects.smokeSpeed]); // eslint-disable-line react-hooks/exhaustive-deps
+  const cb = useFrameCallback((f) => {
+    'worklet';
+    // tốc độ nhân vào bước thời gian (không nhân vào tổng) nên kéo thanh tốc độ khói không bị giật cục
+    smokeAcc.value += Math.min(f.timeSincePreviousFrame ?? 0, 100);
+    if (smokeAcc.value >= 33) {
+      smokeTime.value += (smokeAcc.value / 1000) * speed.value;
+      smokeAcc.value = 0;
+    }
+  }, false);
+  useEffect(() => {
+    cb.setActive(running);
+  }, [running]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Lớp đứng yên giữ nguyên khung khói lúc nó xuất hiện (không đọc đồng hồ chung → không vẽ lại mỗi khung hình)
+  const [still] = useState(() => smokeTime.value);
+  const tone = theme.effects.smokeTone ?? 'coffee';
+  const cover = useCoverTint();
+  const coverKey = tone === 'cover' && cover ? `${cover.bg}|${cover.accent}` : '';
+  const target = useMemo(
+    () => smokeUniformColors(tone, tone === 'cover' && cover ? { bg: cover.bg, accent: cover.accent } : null),
+    [tone, coverKey] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const from = useSharedValue(target);
+  const to = useSharedValue(target);
+  const k = useSharedValue(1);
+  const shown = React.useRef(target);
+  useEffect(() => {
+    if (shown.current === target) return;
+    const kk = k.value; // đang chuyển dở (đổi dải liên tiếp): đi tiếp từ màu đang hiện, không nhảy
+    from.value = from.value.map((v, i) => v + (to.value[i] - v) * kk);
+    to.value = target;
+    shown.current = target;
+    k.value = 0;
+    k.value = withTiming(1, { duration: 1000, easing: Easing.inOut(Easing.cubic) });
+  }, [target]); // eslint-disable-line react-hooks/exhaustive-deps
+  const uniforms = useDerivedValue(() => {
+    const a = from.value;
+    const b = to.value;
+    const m = (i: number) => a[i] + (b[i] - a[i]) * k.value;
+    return {
+      res: [cw, ch],
+      time: live ? smokeTime.value : still,
+      c0: [m(0), m(1), m(2)],
+      c1: [m(3), m(4), m(5)],
+      c2: [m(6), m(7), m(8)],
+      c3: [m(9), m(10), m(11)],
+    };
+  });
+  if (!effect || width < 1 || height < 1) return null;
+  return (
+    <View pointerEvents="none" style={[StyleSheet.absoluteFill, { overflow: 'hidden', backgroundColor: theme.colors.bg }]}>
+      <Canvas
+        style={{
+          position: 'absolute',
+          width: cw,
+          height: ch,
+          left: (width - cw) / 2,
+          top: (height - ch) / 2,
+          transform: [{ scale: SMOKE_DIV * 1.02 }],
+        }}
+      >
+        <Fill>
+          <Shader source={effect} uniforms={uniforms} />
+        </Fill>
+      </Canvas>
+      {/* tối nhẹ để chữ trắng luôn đọc được */}
+      <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.16)' }]} />
+    </View>
   );
 }
