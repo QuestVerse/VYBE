@@ -24,7 +24,8 @@ export const defaultTheme: Theme = {
     merged: false,
     style: { background: '#242424F2', rectRadius: 18 },
   },
-  player: { lyricLook: 'glow' },
+  // look phải có sẵn ở đây: merge() chỉ giữ các trường có trong theme mặc định, thiếu là kiểu player đã chọn bị mất mỗi lần mở app
+  player: { lyricLook: 'glow', look: 'classic' },
   library: { layout: 'list', order: [] },
   home: {
     sections: ['myPlaylists', 'recent', 'feed', 'trending', 'recommended', 'playlistPicks'],
