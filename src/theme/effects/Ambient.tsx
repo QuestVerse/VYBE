@@ -807,13 +807,19 @@ const AURORA_BANDS: [string, number, number, number, number, number, number][] =
   ['43,217,232', 0.33, 0.06, 0.16, 0.038, 2.1, 0.42],
   ['155,108,255', 0.21, 0.045, 0.15, 0.03, 4.2, 0.38],
 ];
+// Hiệu năng: dải cực quang vốn mềm (làm nhoè 16 điểm) → vẽ trên khung bằng 1/3 màn hình rồi phóng to 3 lần (như khói).
+// Độ nhoè đi theo tỉ lệ khung (MakeBlur … true) nên nhìn như cũ, mà GPU chỉ phải làm nhoè ~1/9 số điểm ảnh mỗi khung
+const AURORA_DIV = 3;
 function AuroraRibbons() {
   const { width, height } = useScreenSize();
   const clock = useAmbientClock(true);
+  const cw = Math.ceil(width / AURORA_DIV);
+  const ch = Math.ceil(height / AURORA_DIV);
   const picture = useDerivedValue(() => {
     const t = clock.value / 1000;
     const rec = Skia.PictureRecorder();
-    const canvas = rec.beginRecording(Skia.XYWHRect(0, 0, width, height));
+    const canvas = rec.beginRecording(Skia.XYWHRect(0, 0, cw, ch));
+    canvas.scale(1 / AURORA_DIV, 1 / AURORA_DIV);
     try {
       const N = 28;
       for (let b = 0; b < AURORA_BANDS.length; b++) {
@@ -852,7 +858,22 @@ function AuroraRibbons() {
     }
     return rec.finishRecordingAsPicture();
   });
-  return <Layer picture={picture} />;
+  return (
+    <View pointerEvents="none" style={[StyleSheet.absoluteFill, { overflow: 'hidden' }]}>
+      <Canvas
+        style={{
+          position: 'absolute',
+          width: cw,
+          height: ch,
+          left: (width - cw) / 2,
+          top: (height - ch) / 2,
+          transform: [{ scale: AURORA_DIV }],
+        }}
+      >
+        <Picture picture={picture} />
+      </Canvas>
+    </View>
+  );
 }
 
 // ---------- Mưa trên kính: mưa rơi phía sau, cứ vài giây một giọt nước chảy dài xuống kính, thỉnh thoảng sấm chớp ----------
@@ -1037,24 +1058,30 @@ function NeonGrid() {
     const canvas = rec.beginRecording(Skia.XYWHRect(0, 0, width, height));
     try {
       const hy = height * 0.62;
+      // Quầng sáng: dải chuyển màu mờ dần hai phía (trước đây làm nhoè đường kẻ MỖI khung — rất tốn GPU), nhìn gần như cũ
       const glow = Skia.Paint();
-      glow.setAntiAlias(true);
-      glow.setStyle(1);
-      glow.setStrokeWidth(3);
-      glow.setMaskFilter(Skia.MaskFilter.MakeBlur(0, 4, true));
       const core = Skia.Paint();
       core.setAntiAlias(true);
       core.setStyle(1);
       core.setStrokeWidth(1);
+      const G = 7; // nửa bề dày quầng (điểm)
       // Đường ngang: trôi dần xuống (lại gần), càng gần càng thưa và sáng
       const Hn = 10;
       for (let k = 0; k < Hn; k++) {
         const z = ((k + t * 0.55) % Hn) / Hn;
         const y = hy + (height - hy) * Math.pow(z, 2.2);
         const a = 0.15 + 0.6 * z;
-        glow.setColor(Skia.Color(`rgba(0,240,255,${(a * 0.6).toFixed(3)})`));
+        glow.setShader(
+          Skia.Shader.MakeLinearGradient(
+            { x: 0, y: y - G },
+            { x: 0, y: y + G },
+            [Skia.Color('rgba(0,240,255,0)'), Skia.Color(`rgba(0,240,255,${(a * 0.42).toFixed(3)})`), Skia.Color('rgba(0,240,255,0)')],
+            [0, 0.5, 1],
+            TileMode.Clamp
+          )
+        );
+        canvas.drawRect(Skia.XYWHRect(0, y - G, width, G * 2), glow);
         core.setColor(Skia.Color(`rgba(120,250,255,${a.toFixed(3)})`));
-        canvas.drawLine(0, y, width, y, glow);
         canvas.drawLine(0, y, width, y, core);
       }
       // Glitch: vài vệt màu lệch ngang trong ~0,3 giây, mỗi 6,5 giây
