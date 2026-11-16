@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { createContext, useContext } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -46,6 +46,12 @@ const LG: LGModule | null = (() => {
 })();
 export const hasLiquidGlass = !!LG;
 
+// Lần hiện của tab đang chứa kính (TabPane trong App.tsx tăng số này mỗi khi tab hiện RÕ HẲN sau lúc mờ dần).
+// Liquid Glass của iOS bỏ qua hiệu ứng nếu được dựng lúc khung cha còn quá mờ và không bao giờ tự dựng lại
+// (tài liệu expo-glass-effect SDK 58: "At very low opacity, the glass effect does not render") → đổi tab xong thì kính
+// trong Thư viện / Tìm kiếm... mất hiệu ứng. Đổi key theo số này = dựng lại tấm kính một lần, lúc tab đã rõ 100%
+export const GlassEpoch = createContext(0);
+
 // Ba loại kính (Theme Studio): Trong / Mờ / Khói. Thanh "Độ mờ kính" chỉnh độ đậm bên trong loại đó
 // Mờ (frost) làm theo kính của màn đa nhiệm iOS: nhoè đậm, phủ màu theme dày hơn (ngả tối với theme tối),
 // chữ / ảnh phía sau chỉ còn là mảng màu, không đọc được
@@ -72,6 +78,7 @@ export const SQUIRCLE = { borderCurve: 'continuous' as const };
 // Liquid Glass thật của iOS tự vẽ ánh sáng viền và không tắt được, nên khi tắt thì dùng kính tự vẽ (vẫn mờ, vẫn trong)
 export function GlassFill({ radius = 0, solid = 0, slab = false, dark: forceDark = false, noRim = false }: { radius?: number; solid?: number; slab?: boolean; dark?: boolean; noRim?: boolean }) {
   const { theme } = useTheme();
+  const epoch = useContext(GlassEpoch);
   const glassRgb = forceDark ? '22,22,26' : theme.colors.glassRgb;
   const glassTint = forceDark ? 'dark' : theme.colors.glassTint;
   const border = forceDark ? 'rgba(255,255,255,0.14)' : theme.colors.border;
@@ -151,6 +158,7 @@ export function GlassFill({ radius = 0, solid = 0, slab = false, dark: forceDark
         : undefined;
     return (
       <LG.GlassView
+        key={epoch}
         pointerEvents="none"
         glassEffectStyle={material === 'frost' ? 'regular' : 'clear'}
         tintColor={tint}

@@ -41,7 +41,8 @@ import { NavProvider, Page, useNav, useNavStack } from './src/nav/Nav';
 import { CollectionScreen } from './src/screens/CollectionScreen';
 import { ArtistScreen } from './src/screens/ArtistScreen';
 import { FadeLayer, SwipeBack } from './src/nav/SwipeBack';
-import RAnimated, { cancelAnimation, Easing as REasing, makeMutable, SharedValue, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import RAnimated, { cancelAnimation, Easing as REasing, makeMutable, SharedValue, useAnimatedReaction, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import { GlassEpoch } from './src/components/Glass';
 import { scheduleOnRN } from 'react-native-worklets';
 import { AppBackground } from './src/components/AppBackground';
 import { AmbientEffect } from './src/components/AmbientLayer';
@@ -97,11 +98,22 @@ const TAB_OUT = { duration: 200, easing: REasing.out(REasing.quad) };
 
 function TabPane({ o, x, visible, active, pre, children }: { o: SharedValue<number>; x: SharedValue<number>; visible: boolean; active: boolean; pre?: boolean; children: React.ReactNode }) {
   const style = useAnimatedStyle(() => ({ opacity: o.value, transform: [{ translateX: x.value }] }));
+  // Tab vừa hiện rõ hẳn (mờ dần xong): tăng "lần hiện" → các tấm Liquid Glass trong tab dựng lại ở độ mờ 100% (xem GlassEpoch)
+  const [epoch, setEpoch] = useState(0);
+  const bump = useCallback(() => setEpoch((e) => e + 1), []);
+  useAnimatedReaction(
+    () => o.value > 0.999,
+    (full, was) => {
+      if (full && was === false) scheduleOnRN(bump);
+    }
+  );
   return (
     <RAnimated.View pointerEvents={active ? 'auto' : 'none'} style={[StyleSheet.absoluteFill, { display: visible ? 'flex' : 'none' }, style]}>
       {/* Tab đang ẩn: đóng băng, không vẽ lại cho tới khi quay lại tab đó */}
       {/* pre: đang được dựng sẵn lúc rảnh → cho vẽ một lần (vẫn ẩn), xong thì đóng băng như tab ẩn khác */}
-      <Freeze freeze={!visible && !pre}>{children}</Freeze>
+      <GlassEpoch.Provider value={epoch}>
+        <Freeze freeze={!visible && !pre}>{children}</Freeze>
+      </GlassEpoch.Provider>
     </RAnimated.View>
   );
 }

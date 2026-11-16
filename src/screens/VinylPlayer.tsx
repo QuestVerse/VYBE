@@ -821,12 +821,17 @@ const VinylArc = React.memo(function VinylArc({
   const endSV = useDerivedValue(() => posSV.value);
   const knobR = useDerivedValue(() => (scrubSV.value >= 0 ? 9 : 6.5));
   const { r, rt, cx1, cy1, a0, a1, b0, b1, ta0, ta1, tb0, tb1 } = g;
+  // Player đóng thì bị ẩn hẳn (display: none). Mở lại, vùng vẽ Skia không tự vẽ lại cho tới khi có giá trị đổi:
+  // đang phát thì giờ chạy liên tục nên thấy ngay, đang DỪNG thì thanh thời gian biến mất cho tới lúc bấm phát.
+  // Đọc playerProgress ở đây: suốt lúc player mở / đóng, thanh được vẽ lại từng khung hình → luôn hiện, kể cả khi dừng nhạc
   const bar = useDerivedValue(() => {
-    const k = lp.value;
+    // (playerProgress không bao giờ > 2: chỉ để thanh "phụ thuộc" vào nó; viết thành phép so sánh để bản build không lược bỏ)
+    const k = lp.value + (playerProgress.value > 2 ? 1 : 0);
     return arcPath(k * cx1, k * cy1, r, mix(a0, b0, k), mix(a1, b1, k));
   });
   const textPath = useDerivedValue(() => {
-    const k = lp.value;
+    // (playerProgress không bao giờ > 2: chỉ để thanh "phụ thuộc" vào nó; viết thành phép so sánh để bản build không lược bỏ)
+    const k = lp.value + (playerProgress.value > 2 ? 1 : 0);
     return arcPath(k * cx1, k * cy1, rt, mix(ta0, tb0, k), mix(ta1, tb1, k));
   });
   const rightOff = useDerivedValue(() => {
