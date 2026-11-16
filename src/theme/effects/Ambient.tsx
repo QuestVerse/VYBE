@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { AppState, StyleSheet, View } from 'react-native';
-import { BlendMode, Canvas, Fill, ImageSVG, Picture, Shader, Skia, TileMode, type SkImage } from '@shopify/react-native-skia';
+import { BlendMode, Canvas, FilterMode, Fill, ImageSVG, MipmapMode, Picture, Shader, Skia, TileMode, type SkCanvas, type SkImage, type SkRect } from '@shopify/react-native-skia';
 import { Easing, makeMutable, useDerivedValue, useFrameCallback, useSharedValue, withTiming } from 'react-native-reanimated';
 
 // Đồng hồ chung cho mọi lớp hiệu ứng: hạt rơi / sao băng tính hoàn toàn theo thời gian t, nên hai lớp cùng một t
@@ -267,6 +267,60 @@ function StarryDrift() {
   return <Layer picture={picture} />;
 }
 
+
+// ---------- Ảnh mẫu hạt (tuyết, lá, hạt cà phê, cánh hoa) ----------
+// Trước đây MỖI khung hình (60 lần / giây, trên luồng giao diện) đều đọc lại hình từ chuỗi SVG, tạo lại cọ vẽ rồi vẽ từng hạt
+// một. Giờ làm như Trời sao: vẽ sẵn hình mẫu MỘT lần (màu trắng, lá / cánh hoa có thêm các khung "đang lật"), mỗi khung hình
+// chỉ tính vị trí + góc của từng hạt rồi dán tất cả bằng MỘT lệnh drawAtlas, nhuộm màu lúc dán (Modulate) → nhìn như cũ,
+// GPU / CPU nhẹ hơn nhiều. Vẽ mẫu ở mật độ 2× (đủ nét cho hạt nhỏ đang chuyển động, ảnh mẫu chỉ vài trăm KB)
+const SPR_PR = 2;
+type Sheet = { img: SkImage; srcs: SkRect[]; half: number };
+const sheetCache = new Map<string, Sheet | null>();
+function bakeSheet(key: string, n: number, halfPt: number, draw: (c: SkCanvas, i: number) => void): Sheet | null {
+  if (sheetCache.has(key)) return sheetCache.get(key) ?? null;
+  let out: Sheet | null = null;
+  try {
+    const cell = Math.ceil(halfPt * 2 * SPR_PR);
+    const cols = Math.ceil(Math.sqrt(n));
+    const rows = Math.ceil(n / cols);
+    const surf = Skia.Surface.Make(cols * cell, rows * cell);
+    if (surf) {
+      const c = surf.getCanvas();
+      const srcs: SkRect[] = [];
+      for (let i = 0; i < n; i++) {
+        const x = (i % cols) * cell;
+        const y = Math.floor(i / cols) * cell;
+        c.save();
+        c.translate(x + cell / 2, y + cell / 2);
+        c.scale(SPR_PR, SPR_PR);
+        draw(c, i);
+        c.restore();
+        srcs.push(Skia.XYWHRect(x, y, cell, cell));
+      }
+      surf.flush();
+      out = { img: surf.makeImageSnapshot(), srcs, half: cell / 2 };
+    }
+  } catch (e) {
+    console.warn('[theme] sprites', key, e);
+  }
+  sheetCache.set(key, out);
+  return out;
+}
+const whitePaint = () => {
+  const p = Skia.Paint();
+  p.setAntiAlias(true);
+  p.setColor(Skia.Color('#FFFFFF'));
+  return p;
+};
+const rgb01 = (hex: string) => {
+  const c = Skia.Color(hex);
+  return [c[0], c[1], c[2]];
+};
+// lọc mượt khi dán ảnh mẫu xoay / thu nhỏ (mặc định là lấy điểm gần nhất → răng cưa)
+const SMOOTH = { filter: FilterMode.Linear, mipmap: MipmapMode.None };
+// khung lật: chọn khung vẽ sẵn gần nhất với độ lật hiện tại
+const FLIPS = 16;
+
 const rnd = (i: number, k: number) => {
   'worklet'; // dùng được cả trong hàm vẽ chạy trên UI thread (sao băng chọn vị trí mới mỗi đợt)
   const v = Math.sin(i * 12.9898 + k * 78.233) * 43758.5453;
@@ -288,7 +342,6 @@ function Layer({ picture }: { picture: ReturnType<typeof useDerivedValue<import(
 function SnowCanvas({ color }: { color: string }) {
   const { width, height } = useScreenSize();
   const clock = useAmbientClock();
-  const flakeSvgs = FLAKE_SVGS;
   // Mỗi bông 8 số: x, y ban đầu, tốc độ rơi (px/giây), bán kính, độ lắc, tần số lắc, độ đậm, tốc độ xoay.
   // Bông to (gần) rơi nhanh và đậm hơn bông nhỏ (xa) → cảm giác có chiều sâu
   const flakes = useMemo(() => {
@@ -302,30 +355,43 @@ function SnowCanvas({ color }: { color: string }) {
     }
     return out;
   }, [width, height]);
-
+  // Mẫu: 4 kiểu bông × 2 cỡ (nhỏ / lớn) để nét luôn mảnh ~1,2 điểm như vẽ thẳng (phóng to một mẫu thì nét dày theo)
+  const SIZES = [7, 11.5];
+  const sheet = useMemo(
+    () =>
+      bakeSheet('snow', FLAKE_SVGS.length * 2, 11.5 + 2, (c, i) => {
+        const path = Skia.Path.MakeFromSVGString(FLAKE_SVGS[i % FLAKE_SVGS.length]);
+        if (!path) return;
+        const p = whitePaint();
+        p.setStyle(1);
+        p.setStrokeCap(1);
+        p.setStrokeJoin(1);
+        drawFlake(c, p, path, 0, 0, SIZES[i < FLAKE_SVGS.length ? 0 : 1], 0, 1.2);
+      }),
+    [] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const rgb = useMemo(() => rgb01(color), [color]);
   const picture = useDerivedValue(() => {
     const t = clock.value / 1000;
     const rec = Skia.PictureRecorder();
     const canvas = rec.beginRecording(Skia.XYWHRect(0, 0, width, height));
-    try {
-      const shapes = flakeSvgs.map((d) => Skia.Path.MakeFromSVGString(d));
-      const paint = Skia.Paint();
-      paint.setAntiAlias(true);
-      paint.setStyle(1); // vẽ nét
-      paint.setStrokeCap(1);
-      paint.setStrokeJoin(1);
-      paint.setColor(Skia.Color(color));
+    if (sheet) {
+      const n4 = FLAKE_SVGS.length;
       const H = height + 30;
+      const srcs = [];
+      const xf = [];
+      const cols = [];
       for (let i = 0, k = 0; i < flakes.length; i += 8, k++) {
-        const shape = shapes[k % shapes.length];
-        if (!shape) continue;
         const y = ((flakes[i + 1] * H + flakes[i + 2] * t) % H) - 15;
         const x = flakes[i] * width + Math.sin(t * flakes[i + 5] * 6.28 + i) * flakes[i + 4];
-        paint.setAlphaf(flakes[i + 6]);
-        drawFlake(canvas, paint, shape, x, y, flakes[i + 3], k * 23 + t * flakes[i + 7], 1.2);
+        const r = flakes[i + 3];
+        const big = r > 9 ? 1 : 0;
+        srcs.push(sheet.srcs[(k % n4) + big * n4]);
+        const rad = ((k * 23 + t * flakes[i + 7]) * Math.PI) / 180;
+        xf.push(Skia.RSXformFromRadians(r / SIZES[big] / SPR_PR, rad, x, y, sheet.half, sheet.half));
+        cols.push(Float32Array.of(rgb[0], rgb[1], rgb[2], flakes[i + 6]));
       }
-    } catch (e) {
-      // vẽ lỗi thì khung hình này để trống
+      canvas.drawAtlas(sheet.img, srcs, xf, Skia.Paint(), BlendMode.Modulate, cols, SMOOTH);
     }
     return rec.finishRecordingAsPicture();
   });
@@ -335,8 +401,6 @@ function SnowCanvas({ color }: { color: string }) {
 function LeafCanvas() {
   const { width, height } = useScreenSize();
   const clock = useAmbientClock();
-  const leafSvgs = LEAF_SVGS;
-  const colors = LEAF_COLORS;
   // Mỗi lá 9 số: x, y ban đầu, tốc độ rơi, kích thước, độ đưa ngang, tần số đưa, độ đậm, tốc độ lật, màu.
   // Lá rơi chậm hơn tuyết, đưa qua lại rộng hơn và lật vòng như đang bay trong gió
   const leaves = useMemo(() => {
@@ -350,31 +414,44 @@ function LeafCanvas() {
     }
     return out;
   }, [width, height]);
-
+  // Mẫu: 4 kiểu lá × 16 khung lật (−1 … 1), vẽ ở cỡ lớn nhất (15) rồi thu nhỏ khi dán
+  const R = 15;
+  const sheet = useMemo(
+    () =>
+      bakeSheet('leaf', LEAF_SVGS.length * FLIPS, R * 1.35 + 2, (c, i) => {
+        const shapes = makeLeafPaths(Skia, LEAF_SVGS);
+        const shape = shapes[Math.floor(i / FLIPS)];
+        if (!shape) return;
+        const flip = -1 + (2 * (i % FLIPS)) / (FLIPS - 1);
+        drawLeaf(c, whitePaint(), shape, 0, 0, R, 0, flip);
+      }),
+    []
+  );
+  const tint = useMemo(() => LEAF_COLORS.map(rgb01), []);
   const picture = useDerivedValue(() => {
     const t = clock.value / 1000;
     const rec = Skia.PictureRecorder();
     const canvas = rec.beginRecording(Skia.XYWHRect(0, 0, width, height));
-    try {
-      const shapes = makeLeafPaths(Skia, leafSvgs);
-      const paint = Skia.Paint();
-      paint.setAntiAlias(true);
+    if (sheet) {
+      const nShapes = LEAF_SVGS.length;
       const H = height + 60;
+      const srcs = [];
+      const xf = [];
+      const cols = [];
       for (let i = 0, k = 0; i < leaves.length; i += 9, k++) {
-        const shape = shapes[k % shapes.length];
-        if (!shape) continue;
         const sway = Math.sin(t * leaves[i + 5] * 6.28 + k);
         const y = ((leaves[i + 1] * H + leaves[i + 2] * t) % H) - 30;
         const x = leaves[i] * width + sway * leaves[i + 4];
         // Lá nghiêng theo hướng đang đưa, và lật (bóp ngang) theo nhịp riêng
         const rot = 25 + sway * 35 + k * 40;
         const flip = Math.cos(t * leaves[i + 7] * 6.28 + k * 1.7);
-        paint.setColor(Skia.Color(colors[leaves[i + 8]]));
-        paint.setAlphaf(leaves[i + 6]);
-        drawLeaf(canvas, paint, shape, x, y, leaves[i + 3], rot, flip);
+        const f = Math.round(((flip + 1) / 2) * (FLIPS - 1));
+        srcs.push(sheet.srcs[(k % nShapes) * FLIPS + f]);
+        xf.push(Skia.RSXformFromRadians(leaves[i + 3] / R / SPR_PR, (rot * Math.PI) / 180, x, y, sheet.half, sheet.half));
+        const c = tint[leaves[i + 8]];
+        cols.push(Float32Array.of(c[0], c[1], c[2], leaves[i + 6]));
       }
-    } catch (e) {
-      // vẽ lỗi thì khung hình này để trống
+      canvas.drawAtlas(sheet.img, srcs, xf, Skia.Paint(), BlendMode.Modulate, cols, SMOOTH);
     }
     return rec.finishRecordingAsPicture();
   });
@@ -388,7 +465,11 @@ function OceanCanvas({ onMedia }: { onMedia: boolean }) {
   const clock = useAmbientClock();
   const bubbleColor = onMedia ? '#FFFFFF' : '#5B8FC9';
   const fishColors = FISH_COLORS;
-  const svgs = [FISH_BODY, FISH_TAIL, FISH_FIN];
+  // Hình cá dựng MỘT lần (trước đây đọc lại từ chuỗi SVG ở mỗi khung hình)
+  const fishPaths = useMemo(
+    () => ({ body: Skia.Path.MakeFromSVGString(FISH_BODY), tail: Skia.Path.MakeFromSVGString(FISH_TAIL), fin: Skia.Path.MakeFromSVGString(FISH_FIN) }),
+    []
+  );
   // Bong bóng lẻ, mỗi bong bóng 5 số: x, y ban đầu, tốc độ nổi, bán kính, pha lắc
   const loose = useMemo(() => {
     const out: number[] = [];
@@ -441,9 +522,7 @@ function OceanCanvas({ onMedia }: { onMedia: boolean }) {
       }
 
       // Cá: bơi hết một lượt qua màn hình rồi quay đầu (lúc đã khuất ngoài mép) bơi ngược lại
-      const body = Skia.Path.MakeFromSVGString(svgs[0]);
-      const tail = Skia.Path.MakeFromSVGString(svgs[1]);
-      const fin = Skia.Path.MakeFromSVGString(svgs[2]);
+      const { body, tail, fin } = fishPaths;
       if (body && tail && fin) {
         for (let i = 0, k = 0; i < fish.length; i += 6, k++) {
           const size = fish[i + 2];
@@ -485,39 +564,46 @@ function CoffeeBeans() {
     }
     return out;
   }, [width, height]);
-
+  // Mẫu: một hạt (cỡ 15), rãnh chữ S khoét rỗng
+  const R = 15;
+  const sheet = useMemo(
+    () =>
+      bakeSheet('bean', 1, R * 1.05 + 2, (c) => {
+        const raw = Skia.Path.MakeFromSVGString(BEAN_SVG);
+        if (!raw) return;
+        const bean = Skia.PathBuilder.MakeFromPath(raw).setFillType(1).build(); // even-odd: rãnh giữa thành khe rỗng
+        c.save();
+        c.scale(R, R);
+        c.drawPath(bean, whitePaint());
+        c.restore();
+      }),
+    []
+  );
+  const tint = useMemo(() => BEAN_COLORS.map(rgb01), []);
   const picture = useDerivedValue(() => {
     const t = clock.value / 1000;
     const rec = Skia.PictureRecorder();
     const canvas = rec.beginRecording(Skia.XYWHRect(0, 0, width, height));
-    try {
-      const raw = Skia.Path.MakeFromSVGString(BEAN_SVG);
-      if (raw) {
-        const bean = Skia.PathBuilder.MakeFromPath(raw).setFillType(1).build(); // even-odd: rãnh giữa thành khe rỗng
-        const paint = Skia.Paint();
-        paint.setAntiAlias(true);
-        const M = 30; // lề ngoài màn hình để hạt trôi ra / vào mượt
-        const W = width + M * 2;
-        const H = height + M * 2;
-        for (let i = 0, k = 0; i < beans.length; i += 9, k++) {
-          const dist = beans[i + 3] * t;
-          const bob = Math.sin(t * 0.6 + k * 1.3) * beans[i + 6];
-          let x = (beans[i] * W + Math.cos(beans[i + 2]) * dist) % W;
-          let y = (beans[i + 1] * H + Math.sin(beans[i + 2]) * dist + bob) % H;
-          if (x < 0) x += W;
-          if (y < 0) y += H;
-          paint.setColor(Skia.Color(BEAN_COLORS[beans[i + 8]]));
-          paint.setAlphaf(beans[i + 7]);
-          canvas.save();
-          canvas.translate(x - M, y - M);
-          canvas.rotate(k * 47 + t * beans[i + 5], 0, 0);
-          canvas.scale(beans[i + 4], beans[i + 4]);
-          canvas.drawPath(bean, paint);
-          canvas.restore();
-        }
+    if (sheet) {
+      const M = 30; // lề ngoài màn hình để hạt trôi ra / vào mượt
+      const W = width + M * 2;
+      const H = height + M * 2;
+      const srcs = [];
+      const xf = [];
+      const cols = [];
+      for (let i = 0, k = 0; i < beans.length; i += 9, k++) {
+        const dist = beans[i + 3] * t;
+        const bob = Math.sin(t * 0.6 + k * 1.3) * beans[i + 6];
+        let x = (beans[i] * W + Math.cos(beans[i + 2]) * dist) % W;
+        let y = (beans[i + 1] * H + Math.sin(beans[i + 2]) * dist + bob) % H;
+        if (x < 0) x += W;
+        if (y < 0) y += H;
+        srcs.push(sheet.srcs[0]);
+        xf.push(Skia.RSXformFromRadians(beans[i + 4] / R / SPR_PR, ((k * 47 + t * beans[i + 5]) * Math.PI) / 180, x - M, y - M, sheet.half, sheet.half));
+        const c = tint[beans[i + 8]];
+        cols.push(Float32Array.of(c[0], c[1], c[2], beans[i + 7]));
       }
-    } catch (e) {
-      // vẽ lỗi thì khung hình này để trống
+      canvas.drawAtlas(sheet.img, srcs, xf, Skia.Paint(), BlendMode.Modulate, cols, SMOOTH);
     }
     return rec.finishRecordingAsPicture();
   });
@@ -541,57 +627,73 @@ function SakuraPetals() {
     }
     return out;
   }, [width, height]);
-
+  // Mẫu: [cánh rời × 16 khung lật] + [bông hoa × 16 khung lật], vẽ trắng ở cỡ 15.4 (cỡ lớn nhất của bông) rồi thu nhỏ khi dán.
+  // Nhuỵ hồng của bông hoa: nhuộm trắng thì mất màu → vẽ nhuỵ đậm hơn (độ trong thấp) để nhuộm hồng vẫn thấy tâm sẫm hơn
+  const R = 15.4;
+  const sheet = useMemo(
+    () =>
+      bakeSheet('sakura', FLIPS * 2, R * 1.15 + 2, (c, i) => {
+        const flower = i >= FLIPS;
+        const q = (i % FLIPS) / (FLIPS - 1);
+        const p = whitePaint();
+        if (flower) {
+          const fp = Skia.Path.MakeFromSVGString(PETAL_PATH);
+          if (!fp) return;
+          c.save();
+          c.scale(R, R * (0.35 + 0.65 * q));
+          for (let k = 0; k < 5; k++) {
+            c.save();
+            c.rotate(k * 72, 0, 0);
+            c.scale(0.62, 1);
+            c.drawPath(fp, p);
+            c.restore();
+          }
+          const ctr = Skia.Paint();
+          ctr.setAntiAlias(true);
+          ctr.setColor(Skia.Color('rgba(150,150,150,1)'));
+          c.drawCircle(0, 0, 0.17, ctr);
+          c.restore();
+        } else {
+          const lp = Skia.Path.MakeFromSVGString(LOOSE_PETAL_PATH);
+          if (!lp) return;
+          c.save();
+          c.scale(R / 1.1, (R / 1.1) * (0.2 + 0.8 * q));
+          c.drawPath(lp, p);
+          c.restore();
+        }
+      }),
+    []
+  );
+  const tint = useMemo(() => PETAL_COLORS.map(rgb01), []);
   const picture = useDerivedValue(() => {
     const t = clock.value / 1000;
     const rec = Skia.PictureRecorder();
     const canvas = rec.beginRecording(Skia.XYWHRect(0, 0, width, height));
-    try {
-      const petal = Skia.Path.MakeFromSVGString(LOOSE_PETAL_PATH);
-      const flowerPetal = Skia.Path.MakeFromSVGString(PETAL_PATH);
-      if (petal && flowerPetal) {
-        const paint = Skia.Paint();
-        paint.setAntiAlias(true);
-        const center = Skia.Paint();
-        center.setAntiAlias(true);
-        center.setColor(Skia.Color('#E2799A'));
-        const M = 40;
-        const H = height + M * 2;
-        const W = width + M * 2;
-        for (let i = 0, k = 0; i < petals.length; i += 10, k++) {
-          const sway = Math.sin(t * petals[i + 5] * 6.28 + k);
-          const fall = petals[i + 2] * t;
-          // gió thổi chéo nhẹ từ phải sang trái (cánh rơi từ cây bên phải)
-          let x = (petals[i] * W - fall * 0.45 + sway * petals[i + 4]) % W;
-          if (x < 0) x += W;
-          const y = ((petals[i + 1] * H + fall) % H) - M;
-          const flip = Math.cos(t * petals[i + 7] * 6.28 + k * 1.7);
-          const size = petals[i + 3];
-          paint.setColor(Skia.Color(PETAL_COLORS[petals[i + 8]]));
-          paint.setAlphaf(petals[i + 6]);
-          canvas.save();
-          canvas.translate(x - M, y);
-          canvas.rotate(k * 53 + sway * 40 + t * 20, 0, 0);
-          if (petals[i + 9] > 0) {
-            // bông hoa nhỏ 5 cánh xoay tròn khi rơi
-            canvas.scale(size * 1.1, size * 1.1 * Math.max(0.35, Math.abs(flip)));
-            for (let p = 0; p < 5; p++) {
-              canvas.save();
-              canvas.rotate(p * 72, 0, 0);
-              canvas.scale(0.62, 1);
-              canvas.drawPath(flowerPetal, paint);
-              canvas.restore();
-            }
-            canvas.drawCircle(0, 0, 0.17, center);
-          } else {
-            canvas.scale(size, size * Math.max(0.2, Math.abs(flip)));
-            canvas.drawPath(petal, paint);
-          }
-          canvas.restore();
-        }
+    if (sheet) {
+      const M = 40;
+      const H = height + M * 2;
+      const W = width + M * 2;
+      const srcs = [];
+      const xf = [];
+      const cols = [];
+      for (let i = 0, k = 0; i < petals.length; i += 10, k++) {
+        const sway = Math.sin(t * petals[i + 5] * 6.28 + k);
+        const fall = petals[i + 2] * t;
+        // gió thổi chéo nhẹ từ phải sang trái (cánh rơi từ cây bên phải)
+        let x = (petals[i] * W - fall * 0.45 + sway * petals[i + 4]) % W;
+        if (x < 0) x += W;
+        const y = ((petals[i + 1] * H + fall) % H) - M;
+        const flip = Math.abs(Math.cos(t * petals[i + 7] * 6.28 + k * 1.7));
+        const flower = petals[i + 9] > 0;
+        // khung lật: cánh rời bóp tới 20%, bông hoa tới 35% (như bản vẽ thẳng)
+        const q = flower ? (Math.max(0.35, flip) - 0.35) / 0.65 : (Math.max(0.2, flip) - 0.2) / 0.8;
+        srcs.push(sheet.srcs[(flower ? FLIPS : 0) + Math.round(q * (FLIPS - 1))]);
+        const size = flower ? petals[i + 3] * 1.1 : petals[i + 3] * 1.1;
+        xf.push(Skia.RSXformFromRadians(size / R / SPR_PR, ((k * 53 + sway * 40 + t * 20) * Math.PI) / 180, x - M, y, sheet.half, sheet.half));
+        const c = tint[petals[i + 8]];
+        cols.push(Float32Array.of(c[0], c[1], c[2], petals[i + 6]));
       }
-    } catch (e) {
-      // vẽ lỗi thì khung hình này để trống
+      canvas.drawAtlas(sheet.img, srcs, xf, Skia.Paint(), BlendMode.Modulate, cols, SMOOTH);
     }
     return rec.finishRecordingAsPicture();
   });
