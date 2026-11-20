@@ -1,7 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Alert, FlatList, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { resetVinylFlags, setVinylFlag, useVinylFlags, VINYL_FLAGS } from '../debug/vinylFlags';
-import { GlassLab } from '../debug/GlassLab';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeProvider';
 import { useContentInsets } from '../components/FloatingDock';
@@ -37,7 +36,6 @@ export function LogScreen() {
   const entered = useEntered();
   const [filter, setFilter] = useState<Filter>('all');
   const vflags = useVinylFlags();
-  const [labOpen, setLabOpen] = useState(false);
   const offCount = VINYL_FLAGS.filter(([k]) => !vflags[k]).length;
   const [debugOpen, setDebugOpen] = useState(offCount > 0);
   const n = all.length;
@@ -109,15 +107,6 @@ export function LogScreen() {
             </Pressable>
           </View>
         )}
-      </View>
-      {/* Thử kính: tìm vì sao Liquid Glass / khung Skia mất (tạm thời, sẽ gỡ) */}
-      <View style={[styles.debugBox, { borderColor: border, backgroundColor: surface }]}>
-        <Pressable onPress={() => setLabOpen((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Ionicons name="flask-outline" size={18} color={text} />
-          <Text style={{ flex: 1, color: text, fontWeight: '800', fontSize: 15 }}>Thử kính (Liquid Glass + Skia)</Text>
-          <Ionicons name={labOpen ? 'chevron-up' : 'chevron-down'} size={18} color={textSecondary} />
-        </Pressable>
-        {labOpen && <GlassLab text={text} sub={textSecondary} accent={accent} />}
       </View>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 14 }}>
         {FILTERS.map((f) => {

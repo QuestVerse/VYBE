@@ -1,8 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { useAnimatedReaction, type SharedValue } from 'react-native-reanimated';
-import { scheduleOnRN } from 'react-native-worklets';
-import { useVinylFlags } from '../debug/vinylFlags';
-import { getLogContext, log } from '../data/applog';
+import React, { createContext, useContext } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -49,74 +45,15 @@ const LG: LGModule | null = (() => {
   }
 })();
 export const hasLiquidGlass = !!LG;
-// Cho màn "Thử kính" (src/debug/GlassLab.tsx) dùng thẳng tấm kính gốc, không qua GlassFill / GlassScope
-export const LiquidGlass = LG;
 
-// ---------------- Liquid Glass: khi nào được hiện ----------------
-// Tài liệu expo-glass-effect + Apple: opacity < 1 (nhất là 0) ở GlassView HOẶC BẤT KỲ VIEW CHA nào → kính không vẽ, và đưa
-// opacity về 1 sau đó cũng không vẽ lại. Cách tài liệu khuyên: khi vùng chứa kính đang mờ / ẩn thì đặt
-// glassEffectStyle = 'none', hiện rõ hẳn rồi mới đặt lại kiểu thật (có hiệu ứng chuyển của hệ thống).
-// Bản cũ (2544d2d, 32c715e, 319da56) gỡ / gắn lại tấm kính bằng key — log 20/11 13:50 cho thấy dựng lại đúng lúc tab đã rõ
-// 100% mà vẫn mất (đoán: React Native dùng lại view gốc cũ nên không thật sự có tấm kính mới).
-//  - on: vùng chứa (tab / trang mở chồng / player) đang hiện rõ hẳn → được bật kính
-//  - epoch: tăng = "bật lại" kính một lần (đặt 'none' 1 khung rồi đặt lại kiểu thật): app vào lại, xoay xong, đóng player
-type GlassStateT = { on: boolean; epoch: number; name: string };
-const GlassState = createContext<GlassStateT>({ on: true, epoch: 0, name: '' });
-
-// Bọc một vùng có thể mờ / ẩn. vis = độ hiện của vùng (0..1); chỉ > 0.999 mới coi là hiện rõ.
-// Lồng nhau thì vùng con chỉ bật khi cả vùng cha cũng bật
-export function GlassScope({ vis, epoch = 0, name, children }: { vis: SharedValue<number>; epoch?: number; name: string; children: React.ReactNode }) {
-  const parent = useContext(GlassState);
-  const [own, setOwn] = useState(() => vis.value > 0.999);
-  useAnimatedReaction(
-    () => vis.value > 0.999,
-    (v, was) => {
-      if (v !== was) scheduleOnRN(setOwn, v);
-    }
-  );
-  const on = parent.on && own;
-  const ep = parent.epoch * 1000 + epoch;
-  const val = useMemo(() => ({ on, epoch: ep, name }), [on, ep, name]);
-  return <GlassState.Provider value={val}>{children}</GlassState.Provider>;
-}
-
-// ---- Nhật ký kính: gom trong ~0,6 giây thành 1 dòng: bao nhiêu tấm vừa BẬT / TẮT / bật lại, ở vùng nào, vì sao
-let gOn = 0;
-let gOff = 0;
-let gBlink = 0;
-let gMount = 0;
-let gWhy = '';
-let gScopes = new Set<string>();
-let gMode = '';
-let gTimer: ReturnType<typeof setTimeout> | null = null;
-export function glassRebuildReason(why: string) {
-  gWhy = gWhy ? `${gWhy}, ${why}` : why;
-}
-function glassFlush() {
-  gTimer = null;
-  const parts = [
-    gOn && `bật ${gOn}`,
-    gOff && `tắt ${gOff}`,
-    gBlink && `bật lại ${gBlink}`,
-    gMount && `gắn mới ${gMount}`,
-  ].filter(Boolean);
-  const why = gWhy;
-  const scopes = [...gScopes].join(', ');
-  const mode = gMode;
-  gOn = gOff = gBlink = gMount = 0;
-  gWhy = '';
-  gScopes = new Set();
-  if (!parts.length) return;
-  log('ui', `kính (${mode}): ${parts.join(', ')} tấm · vùng ${scopes || '?'} · đang ở ${getLogContext() || '?'}${why ? ` · vì ${why}` : ''}`);
-}
-function noteGlass(kind: 'on' | 'off' | 'blink' | 'mount', scope: string, mode: string) {
-  if (kind === 'on') gOn++;
-  else if (kind === 'off') gOff++;
-  else if (kind === 'blink') gBlink++;
-  else gMount++;
-  gScopes.add(scope || 'ngoài (dock / mini player)');
-  gMode = mode;
-  if (!gTimer) gTimer = setTimeout(glassFlush, 600);
+// ---------------- Liquid Glass chỉ dùng ở dock + mini player ----------------
+// 4 lần sửa (2544d2d, 32c715e, 319da56, 43636ed) không giữ được Liquid Glass trong các vùng hay bị ẩn / làm mờ (tab, trang mở chồng,
+// player): log cho thấy JS đã bật kính đúng lúc nhưng iOS không vẽ. Apple (diễn đàn dev): kính từng ở trong view cha mờ thì không
+// vẽ lại, lỗi này không xảy ra với kính làm mờ kiểu cũ (UIBlurEffect). Dock và mini player luôn hiện nên chưa lần nào mất kính.
+// → Mọi tấm kính nằm trong GlassInside dùng kính tự vẽ (BlurView + lớp màu + viền sáng); ngoài GlassInside vẫn là Liquid Glass thật
+const GlassInsideCtx = createContext(false);
+export function GlassInside({ children }: { children: React.ReactNode }) {
+  return <GlassInsideCtx.Provider value>{children}</GlassInsideCtx.Provider>;
 }
 
 // Ba loại kính (Theme Studio): Trong / Mờ / Khói. Thanh "Độ mờ kính" chỉnh độ đậm bên trong loại đó
@@ -145,8 +82,7 @@ export const SQUIRCLE = { borderCurve: 'continuous' as const };
 // Liquid Glass thật của iOS tự vẽ ánh sáng viền và không tắt được, nên khi tắt thì dùng kính tự vẽ (vẫn mờ, vẫn trong)
 export function GlassFill({ radius = 0, solid = 0, slab = false, dark: forceDark = false, noRim = false }: { radius?: number; solid?: number; slab?: boolean; dark?: boolean; noRim?: boolean }) {
   const { theme } = useTheme();
-  const gs = useContext(GlassState);
-  const newWay = useVinylFlags().glassNew;
+  const inside = useContext(GlassInsideCtx);
   const glassRgb = forceDark ? '22,22,26' : theme.colors.glassRgb;
   const glassTint = forceDark ? 'dark' : theme.colors.glassTint;
   const border = forceDark ? 'rgba(255,255,255,0.14)' : theme.colors.border;
@@ -154,36 +90,6 @@ export function GlassFill({ radius = 0, solid = 0, slab = false, dark: forceDark
   const material: GlassMaterial = theme.glass.material ?? 'clear';
   const dark = glassTint === 'dark';
   const real = Platform.OS !== 'web';
-  const isLG = !!LG && !noRim && material !== 'neon' && material !== 'matte';
-  // Cách mới: "bật lại" = tắt kính đúng 1 khung hình rồi bật lại (đổi kiểu, KHÔNG gỡ tấm kính)
-  const [blink, setBlink] = useState(false);
-  const firstEp = useRef(true);
-  useEffect(() => {
-    if (firstEp.current) {
-      firstEp.current = false;
-      return;
-    }
-    if (!isLG || !newWay || !gs.on) return;
-    noteGlass('blink', gs.name, 'cách mới');
-    setBlink(true);
-    const id = requestAnimationFrame(() => setBlink(false));
-    return () => cancelAnimationFrame(id);
-  }, [gs.epoch]); // eslint-disable-line react-hooks/exhaustive-deps
-  const live = newWay ? gs.on && !blink : true;
-  const firstLive = useRef(true);
-  useEffect(() => {
-    if (!isLG) return;
-    if (firstLive.current) {
-      firstLive.current = false;
-      noteGlass('mount', gs.name, newWay ? 'cách mới' : 'cách cũ');
-      return;
-    }
-    if (newWay && !blink) noteGlass(gs.on ? 'on' : 'off', gs.name, 'cách mới');
-  }, [gs.on, isLG]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (isLG && !newWay && gs.epoch) noteGlass('mount', gs.name, 'cách cũ');
-  }, [gs.epoch]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // ---- Neon: gần như trong suốt (nhoè rất nhẹ + lớp tối mỏng), chỉ có viền phát sáng màu đèn (chọn trong Theme Studio).
   // Quầng sáng toả RA NGOÀI nên lớp viền nằm ngoài khung cắt (không overflow: hidden), còn lớp nhoè nằm trong khung cắt
   if (material === 'neon') {
@@ -244,7 +150,7 @@ export function GlassFill({ radius = 0, solid = 0, slab = false, dark: forceDark
   }
 
   // ---- iOS 26+: Liquid Glass thật (khúc xạ, mép kính, phản chiếu do hệ thống vẽ)
-  if (LG && !noRim) {
+  if (LG && !noRim && !inside) {
     const tint =
       material === 'smoke'
         ? `rgba(0,0,0,${(0.22 + 0.33 * g.level).toFixed(2)})`
@@ -255,15 +161,8 @@ export function GlassFill({ radius = 0, solid = 0, slab = false, dark: forceDark
         : undefined;
     return (
       <LG.GlassView
-        key={newWay ? 'g' : gs.epoch}
         pointerEvents="none"
-        glassEffectStyle={
-          newWay
-            ? live
-              ? { style: material === 'frost' ? 'regular' : 'clear', animate: !blink, animationDuration: 0.25 }
-              : 'none'
-            : material === 'frost' ? 'regular' : 'clear'
-        }
+        glassEffectStyle={material === 'frost' ? 'regular' : 'clear'}
         tintColor={tint}
         colorScheme={dark ? 'dark' : 'light'}
         style={[StyleSheet.absoluteFill, SQUIRCLE, { borderRadius: radius, overflow: 'hidden' }]}

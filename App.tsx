@@ -7,7 +7,7 @@ import { StatsScreen } from './src/screens/StatsScreen';
 import { AppleDock } from './src/components/AppleDock';
 import { ZyxDock } from './src/components/ZyxDock';
 import { OfflineBanner } from './src/components/OfflineBanner';
-import { ActivityIndicator, Animated, AppState, Platform, StatusBar, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Animated, Platform, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ScreenSizeProvider } from './src/components/ScreenSize';
@@ -35,15 +35,14 @@ import { syncSharedPlaylists } from './src/data/sharedSync';
 import { startBackup } from './src/data/backup';
 import { useDbVersion } from './src/data/db';
 import { useSession } from './src/data/auth';
-import { PlayerTransition, playerProgress } from './src/components/PlayerTransition';
+import { PlayerTransition } from './src/components/PlayerTransition';
 import { BackdropBlur } from './src/components/BackdropBlur';
 import { NavProvider, Page, useNav, useNavStack } from './src/nav/Nav';
 import { CollectionScreen } from './src/screens/CollectionScreen';
 import { ArtistScreen } from './src/screens/ArtistScreen';
 import { FadeLayer, SwipeBack } from './src/nav/SwipeBack';
-import RAnimated, { cancelAnimation, Easing as REasing, makeMutable, SharedValue, useAnimatedReaction, useAnimatedStyle, useDerivedValue, useSharedValue, withTiming } from 'react-native-reanimated';
-import { GlassScope, glassRebuildReason } from './src/components/Glass';
-import { useVinylFlags } from './src/debug/vinylFlags';
+import RAnimated, { cancelAnimation, Easing as REasing, makeMutable, SharedValue, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import { GlassInside } from './src/components/Glass';
 import { scheduleOnRN } from 'react-native-worklets';
 import { AppBackground } from './src/components/AppBackground';
 import { AmbientEffect } from './src/components/AmbientLayer';
@@ -97,120 +96,26 @@ const TAB_SHIFT = 30;
 const TAB_IN = { duration: 280, easing: REasing.out(REasing.cubic) };
 const TAB_OUT = { duration: 200, easing: REasing.out(REasing.quad) };
 
-// Số "lần dựng" của các tấm Liquid Glass trong một vùng (tab hoặc trang mở chồng), o = độ hiện của vùng đó.
-// Tăng số này = dựng lại kính (xem GlassEpoch trong Glass.tsx). Tăng khi: vùng vừa hiện rõ hẳn, app vừa vào lại,
-// xoay máy xong, player vừa thu về
-function useGlassRefresh(o: SharedValue<number>) {
-  // Tab vừa hiện rõ hẳn (mờ dần xong): tăng "lần hiện" → các tấm Liquid Glass trong tab dựng lại ở độ mờ 100% (xem GlassEpoch)
-  const [epoch, setEpoch] = useState(0);
-  const bump = useCallback(() => setEpoch((e) => e + 1), []);
-  // Cách mới: vùng hiện rõ thì GlassScope tự bật kính, không cần "bật lại". Cách cũ: dựng lại tấm kính
-  const newWay = useVinylFlags().glassNew;
-  const newRef = useRef(newWay);
-  newRef.current = newWay;
-  const bumpShown = useCallback(() => {
-    if (newRef.current) return;
-    glassRebuildReason('tab hiện rõ');
-    bump();
-  }, [bump]);
-  useAnimatedReaction(
-    () => o.value > 0.999,
-    (full, was) => {
-      if (full && was === false) scheduleOnRN(bumpShown);
-    }
-  );
-  // Dựng lại kính thêm 2 lúc nữa (chỉ tab đang hiện rõ): app vừa vào lại từ nền, và xoay máy xong ~1 giây.
-  // Log 20/11: kính ở Home mất cả sau khi thoát app ra vào lại lẫn sau khi xoay
-  const oRef = useRef(o);
-  oRef.current = o;
-  useEffect(() => {
-    let id: ReturnType<typeof setTimeout> | undefined;
-    const sub = AppState.addEventListener('change', (st) => {
-      if (st !== 'active') return;
-      clearTimeout(id);
-      id = setTimeout(() => {
-        // player đang che tab: để lúc đóng player dựng lại (xem bên dưới), dựng bây giờ là dựng lúc bị che → lại mất
-        if (oRef.current.value > 0.999 && playerProgress.value < 0.01) {
-          glassRebuildReason('app vào lại');
-          bump();
-        }
-      }, 300);
-    });
-    return () => {
-      clearTimeout(id);
-      sub.remove();
-    };
-  }, [bump]);
-  // Player vừa thu về hẳn: dựng lại kính của tab nằm bên dưới. Log + ảnh 20/11 13:42: mở player đè lên Home / Cài đặt rồi
-  // đóng lại (không xoay, không thoát app) là các tấm kính bên dưới mất hiệu ứng, chỉ còn nền đặc. Chưa rõ iOS làm rơi
-  // kính vì sao (bị che kín / lúc player chụp màn hình để chuyển cảnh), nên cứ đóng player xong là dựng lại một lần
-  const closedBump = useCallback(() => {
-    setTimeout(() => {
-      if (oRef.current.value > 0.999 && playerProgress.value < 0.01) {
-        glassRebuildReason('player vừa đóng');
-        bump();
-      }
-    }, 120);
-  }, [bump]);
-  useAnimatedReaction(
-    () => playerProgress.value < 0.003,
-    (closed, was) => {
-      if (closed && was === false) scheduleOnRN(closedBump);
-    }
-  );
-  const win = useWindowDimensions();
-  const land = win.width > win.height;
-  const landSeen = useRef(land);
-  useEffect(() => {
-    if (landSeen.current === land) return;
-    landSeen.current = land;
-    const id = setTimeout(() => {
-      if (oRef.current.value > 0.999 && playerProgress.value < 0.01) {
-        glassRebuildReason('xoay xong');
-        bump();
-      }
-    }, 1000);
-    return () => clearTimeout(id);
-  }, [land, bump]);
-  return epoch;
-}
-
-function TabPane({ o, x, fade, visible, active, pre, name, children }: { o: SharedValue<number>; x: SharedValue<number>; fade: SharedValue<number>; visible: boolean; active: boolean; pre?: boolean; name: string; children: React.ReactNode }) {
-  // THỬ (công tắc "Ẩn tab / player bằng display:none" TẮT): tab ẩn KHÔNG bị display: none / đóng băng / làm mờ,
-  // chỉ đẩy ra ngoài màn hình — để biết kính + Skia mất có phải do bị ẩn không
-  const keep = !useVinylFlags().hideTabs;
-  const style = useAnimatedStyle(() => ({ opacity: keep ? 1 : o.value, transform: [{ translateX: x.value }] }));
-  const epoch = useGlassRefresh(o);
-  // kính trong tab chỉ bật khi tab hiện rõ VÀ không bị trang mở chồng làm mờ (tabFade)
-  const vis = useDerivedValue(() => Math.min(o.value, fade.value));
+function TabPane({ o, x, visible, active, pre, children }: { o: SharedValue<number>; x: SharedValue<number>; visible: boolean; active: boolean; pre?: boolean; children: React.ReactNode }) {
+  const style = useAnimatedStyle(() => ({ opacity: o.value, transform: [{ translateX: x.value }] }));
   return (
-    <RAnimated.View
-      pointerEvents={active ? 'auto' : 'none'}
-      style={[StyleSheet.absoluteFill, keep ? (visible ? null : { left: 100000, right: -100000 }) : { display: visible ? 'flex' : 'none' }, style]}
-    >
+    <RAnimated.View pointerEvents={active ? 'auto' : 'none'} style={[StyleSheet.absoluteFill, { display: visible ? 'flex' : 'none' }, style]}>
       {/* Tab đang ẩn: đóng băng, không vẽ lại cho tới khi quay lại tab đó */}
       {/* pre: đang được dựng sẵn lúc rảnh → cho vẽ một lần (vẫn ẩn), xong thì đóng băng như tab ẩn khác */}
-      <GlassScope vis={vis} epoch={epoch} name={`tab ${name}`}>
-        <Freeze freeze={!keep && !visible && !pre}>{children}</Freeze>
-      </GlassScope>
+      {/* Kính trong tab dùng kính tự vẽ (xem GlassInside trong Glass.tsx) */}
+      <GlassInside>
+        <Freeze freeze={!visible && !pre}>{children}</Freeze>
+      </GlassInside>
     </RAnimated.View>
   );
 }
 
-// Trang mở chồng (playlist, album... — vd. các ô lời trong Thư viện hay mất kính): dựng lại kính y như tab
-function PageGlass({ o, name, children }: { o: SharedValue<number>; name: string; children: React.ReactNode }) {
-  const epoch = useGlassRefresh(o);
-  return (
-    <GlassScope vis={o} epoch={epoch} name={`trang ${name}`}>
-      {children}
-    </GlassScope>
-  );
+// Trang mở chồng (playlist, album...): kính bên trong dùng kính tự vẽ như trong tab (xem GlassInside trong Glass.tsx)
+function PageGlass({ children }: { children: React.ReactNode }) {
+  return <GlassInside>{children}</GlassInside>;
 }
 
-function TabStage({ shown, render, pre, fade }: { shown: PageTab; render: (id: PageTab) => React.ReactNode; pre?: PageTab | null; fade: SharedValue<number> }) {
-  const newWay = useVinylFlags().glassNew;
-  const newRef = useRef(newWay);
-  newRef.current = newWay;
+function TabStage({ shown, render, pre }: { shown: PageTab; render: (id: PageTab) => React.ReactNode; pre?: PageTab | null }) {
   const sv = {
     home: { o: useSharedValue(shown === 'home' ? 1 : 0), x: useSharedValue(0) },
     search: { o: useSharedValue(shown === 'search' ? 1 : 0), x: useSharedValue(0) },
@@ -239,23 +144,6 @@ function TabStage({ shown, render, pre, fade }: { shown: PageTab; render: (id: P
     const dir = Math.sign(TAB_ORDER.indexOf(shown) - TAB_ORDER.indexOf(from)) || 1;
     // Tab mới: đang ẩn hẳn thì đặt ở bên phía nó đi vào; đang mờ dở thì chạy tiếp từ chỗ đó
     const t = sv[shown];
-    if (newRef.current) {
-      // Cách mới (sửa kính mất): KHÔNG làm mờ tab — Liquid Glass không vẽ nếu khung cha từng mờ. Tab cũ ẩn ngay,
-      // tab mới hiện rõ ngay và chỉ trượt nhẹ 30px vào chỗ
-      cancelAnimation(t.o);
-      t.o.value = 1;
-      t.x.value = dir * TAB_SHIFT;
-      t.x.value = withTiming(0, TAB_IN);
-      for (const id of TAB_ORDER) {
-        if (id === shown) continue;
-        cancelAnimation(sv[id].o);
-        cancelAnimation(sv[id].x);
-        sv[id].o.value = 0;
-        sv[id].x.value = 0;
-      }
-      setVisible(new Set([shown]));
-      return;
-    }
     if (t.o.value < 0.01) t.x.value = dir * TAB_SHIFT;
     t.o.value = withTiming(1, TAB_IN);
     t.x.value = withTiming(0, TAB_IN);
@@ -282,7 +170,7 @@ function TabStage({ shown, render, pre, fade }: { shown: PageTab; render: (id: P
         const el = render(id);
         if (!el) return null;
         return (
-          <TabPane key={id} o={sv[id].o} x={sv[id].x} fade={fade} name={id} visible={visible.has(id)} active={id === shown} pre={pre === id}>
+          <TabPane key={id} o={sv[id].o} x={sv[id].x} visible={visible.has(id)} active={id === shown} pre={pre === id}>
             {el}
           </TabPane>
         );
@@ -440,7 +328,7 @@ function Root() {
         {/* Tab hiện tại. Có trang mở chồng thì tab mờ dần đi theo vị trí trang (vuốt quay lại thì hiện lại dần),
             để trang trong suốt phía trên chỉ thấy nền chung, không thấy chữ của tab chồng lên */}
         <FadeLayer value={tabFade} pointerEvents={page ? 'none' : 'auto'} style={{ flex: 1 }}>
-          <TabStage shown={shown as PageTab} render={tabEl} pre={preTab} fade={tabFade} />
+          <TabStage shown={shown as PageTab} render={tabEl} pre={preTab} />
         </FadeLayer>
         {/* Các trang mở chồng lên tab (playlist, album, nghệ sĩ, thể loại...). Dock và mini player vẫn nằm trên.
             Mọi trang trong chồng đều được giữ lại (không dựng lại khi quay về), nhưng chỉ trang trên cùng hiện rõ:
@@ -452,7 +340,7 @@ function Root() {
           return (
             <FadeLayer key={k} value={fadeOf(k)} pointerEvents={top ? 'box-none' : 'none'} style={StyleSheet.absoluteFill}>
               {/* Trang nằm sâu hơn trang ngay dưới trang trên cùng thì không nhìn thấy được: đóng băng */}
-              <PageGlass o={fadeOf(k)} name={pg.type}>
+              <PageGlass>
               <Freeze freeze={i < nav.stack.length - 2}>
               <SwipeBack onBack={nav.pop} fade={i === 0 ? tabFade : fadeOf(pageKey(nav.stack[i - 1], i - 1))}>
                 {pg.type === 'collection' ? (
