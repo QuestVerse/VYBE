@@ -83,7 +83,8 @@ function glassFlush() {
 }
 function noteGlassMount(o: number | null) {
   gN++;
-  if (o != null && o < 0.98) {
+  // tab đang ẩn hẳn (độ hiện ~0, ví dụ dựng sẵn): lúc tab hiện rõ luôn được dựng lại → không đáng nghi, không đếm
+  if (o != null && o > 0.01 && o < 0.98) {
     gLow++;
     gMinO = Math.min(gMinO, o);
   }

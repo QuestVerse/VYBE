@@ -35,7 +35,7 @@ import { syncSharedPlaylists } from './src/data/sharedSync';
 import { startBackup } from './src/data/backup';
 import { useDbVersion } from './src/data/db';
 import { useSession } from './src/data/auth';
-import { PlayerTransition } from './src/components/PlayerTransition';
+import { PlayerTransition, playerProgress } from './src/components/PlayerTransition';
 import { BackdropBlur } from './src/components/BackdropBlur';
 import { NavProvider, Page, useNav, useNavStack } from './src/nav/Nav';
 import { CollectionScreen } from './src/screens/CollectionScreen';
@@ -96,8 +96,10 @@ const TAB_SHIFT = 30;
 const TAB_IN = { duration: 280, easing: REasing.out(REasing.cubic) };
 const TAB_OUT = { duration: 200, easing: REasing.out(REasing.quad) };
 
-function TabPane({ o, x, visible, active, pre, children }: { o: SharedValue<number>; x: SharedValue<number>; visible: boolean; active: boolean; pre?: boolean; children: React.ReactNode }) {
-  const style = useAnimatedStyle(() => ({ opacity: o.value, transform: [{ translateX: x.value }] }));
+// Số "lần dựng" của các tấm Liquid Glass trong một vùng (tab hoặc trang mở chồng), o = độ hiện của vùng đó.
+// Tăng số này = dựng lại kính (xem GlassEpoch trong Glass.tsx). Tăng khi: vùng vừa hiện rõ hẳn, app vừa vào lại,
+// xoay máy xong, player vừa thu về
+function useGlassRefresh(o: SharedValue<number>) {
   // Tab vừa hiện rõ hẳn (mờ dần xong): tăng "lần hiện" → các tấm Liquid Glass trong tab dựng lại ở độ mờ 100% (xem GlassEpoch)
   const [epoch, setEpoch] = useState(0);
   const bump = useCallback(() => setEpoch((e) => e + 1), []);
@@ -114,13 +116,15 @@ function TabPane({ o, x, visible, active, pre, children }: { o: SharedValue<numb
   // Dựng lại kính thêm 2 lúc nữa (chỉ tab đang hiện rõ): app vừa vào lại từ nền, và xoay máy xong ~1 giây.
   // Log 20/11: kính ở Home mất cả sau khi thoát app ra vào lại lẫn sau khi xoay
   const oRef = useRef(o);
+  oRef.current = o;
   useEffect(() => {
     let id: ReturnType<typeof setTimeout> | undefined;
     const sub = AppState.addEventListener('change', (st) => {
       if (st !== 'active') return;
       clearTimeout(id);
       id = setTimeout(() => {
-        if (oRef.current.value > 0.999) {
+        // player đang che tab: để lúc đóng player dựng lại (xem bên dưới), dựng bây giờ là dựng lúc bị che → lại mất
+        if (oRef.current.value > 0.999 && playerProgress.value < 0.01) {
           glassRebuildReason('app vào lại');
           bump();
         }
@@ -131,6 +135,23 @@ function TabPane({ o, x, visible, active, pre, children }: { o: SharedValue<numb
       sub.remove();
     };
   }, [bump]);
+  // Player vừa thu về hẳn: dựng lại kính của tab nằm bên dưới. Log + ảnh 20/11 13:42: mở player đè lên Home / Cài đặt rồi
+  // đóng lại (không xoay, không thoát app) là các tấm kính bên dưới mất hiệu ứng, chỉ còn nền đặc. Chưa rõ iOS làm rơi
+  // kính vì sao (bị che kín / lúc player chụp màn hình để chuyển cảnh), nên cứ đóng player xong là dựng lại một lần
+  const closedBump = useCallback(() => {
+    setTimeout(() => {
+      if (oRef.current.value > 0.999 && playerProgress.value < 0.01) {
+        glassRebuildReason('player vừa đóng');
+        bump();
+      }
+    }, 120);
+  }, [bump]);
+  useAnimatedReaction(
+    () => playerProgress.value < 0.003,
+    (closed, was) => {
+      if (closed && was === false) scheduleOnRN(closedBump);
+    }
+  );
   const win = useWindowDimensions();
   const land = win.width > win.height;
   const landSeen = useRef(land);
@@ -138,13 +159,19 @@ function TabPane({ o, x, visible, active, pre, children }: { o: SharedValue<numb
     if (landSeen.current === land) return;
     landSeen.current = land;
     const id = setTimeout(() => {
-      if (oRef.current.value > 0.999) {
+      if (oRef.current.value > 0.999 && playerProgress.value < 0.01) {
         glassRebuildReason('xoay xong');
         bump();
       }
     }, 1000);
     return () => clearTimeout(id);
   }, [land, bump]);
+  return epoch;
+}
+
+function TabPane({ o, x, visible, active, pre, children }: { o: SharedValue<number>; x: SharedValue<number>; visible: boolean; active: boolean; pre?: boolean; children: React.ReactNode }) {
+  const style = useAnimatedStyle(() => ({ opacity: o.value, transform: [{ translateX: x.value }] }));
+  const epoch = useGlassRefresh(o);
   return (
     <RAnimated.View pointerEvents={active ? 'auto' : 'none'} style={[StyleSheet.absoluteFill, { display: visible ? 'flex' : 'none' }, style]}>
       {/* Tab đang ẩn: đóng băng, không vẽ lại cho tới khi quay lại tab đó */}
@@ -155,6 +182,16 @@ function TabPane({ o, x, visible, active, pre, children }: { o: SharedValue<numb
       </GlassEpoch.Provider>
       </GlassFade.Provider>
     </RAnimated.View>
+  );
+}
+
+// Trang mở chồng (playlist, album... — vd. các ô lời trong Thư viện hay mất kính): dựng lại kính y như tab
+function PageGlass({ o, children }: { o: SharedValue<number>; children: React.ReactNode }) {
+  const epoch = useGlassRefresh(o);
+  return (
+    <GlassFade.Provider value={o}>
+      <GlassEpoch.Provider value={epoch}>{children}</GlassEpoch.Provider>
+    </GlassFade.Provider>
   );
 }
 
@@ -383,6 +420,7 @@ function Root() {
           return (
             <FadeLayer key={k} value={fadeOf(k)} pointerEvents={top ? 'box-none' : 'none'} style={StyleSheet.absoluteFill}>
               {/* Trang nằm sâu hơn trang ngay dưới trang trên cùng thì không nhìn thấy được: đóng băng */}
+              <PageGlass o={fadeOf(k)}>
               <Freeze freeze={i < nav.stack.length - 2}>
               <SwipeBack onBack={nav.pop} fade={i === 0 ? tabFade : fadeOf(pageKey(nav.stack[i - 1], i - 1))}>
                 {pg.type === 'collection' ? (
@@ -404,6 +442,7 @@ function Root() {
                 )}
               </SwipeBack>
               </Freeze>
+              </PageGlass>
             </FadeLayer>
           );
         })}
