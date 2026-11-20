@@ -57,7 +57,21 @@ function notify() {
 // Đếm việc app làm (để dò "tốn CPU khi ở nền")
 export const bgStats = { status: 0, sync: 0, raf: 0, logs: 0, renders: 0 };
 
+// ---- Dấu vết "việc vừa chạy" (để biết thủ phạm khi luồng JS khựng lâu): mỗi dòng nhật ký, mỗi lần một màn vẽ lại, và vài
+// việc nặng tự đánh dấu bằng crumb() (tìm lời, đọc trang YouTube...). Khựng thì ghi kèm các dấu vết rơi vào khoảng khựng đó
+const crumbs: { t: number; s: string }[] = [];
+export function crumb(s: string) {
+  crumbs.push({ t: performance.now(), s });
+  if (crumbs.length > 60) crumbs.shift();
+}
+function crumbsWithin(ms: number) {
+  const now = performance.now();
+  const list = crumbs.filter((c) => now - c.t <= ms + 300).slice(-8);
+  return list.length ? ` · việc vừa chạy: ${list.map((c) => `${c.s} (${Math.round(now - c.t)}ms trước)`).join(', ')}` : ' · không có dấu vết việc nào';
+}
+
 export function log(tag: LogTag, msg: string) {
+  crumb(`[${tag}] ${msg.length > 48 ? `${msg.slice(0, 48)}…` : msg}`);
   bgStats.logs++;
   const arr = load();
   arr.push({ t: Date.now(), tag, msg, bg: AppState.currentState !== 'active' || undefined });
@@ -183,7 +197,7 @@ export function installAppLog() {
     bgStats.raf++;
     if (last) {
       const gap = now - last;
-      if (gap > 150 && !justResumed()) log('jank', `luồng JS khựng ${Math.round(gap)}ms${ctx ? ` · ${ctx}` : ''}`);
+      if (gap > 150 && !justResumed()) log('jank', `luồng JS khựng ${Math.round(gap)}ms${ctx ? ` · ${ctx}` : ''}${gap > 400 ? crumbsWithin(gap) : ''}`);
     }
     last = now;
     requestAnimationFrame(loop);

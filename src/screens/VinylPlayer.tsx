@@ -54,6 +54,12 @@ function getTimeFont() {
 }
 
 // (các hàm dùng trong worklet phải khai báo TRƯỚC worklet dùng chúng)
+// Mở player: đĩa lăn từ mép trái vào góc của nó (thay cho ảnh bìa bay). e = 0 lúc player vừa bắt đầu nở, 1 lúc mở hẳn
+const openEase = (pv: number) => {
+  'worklet';
+  const t = Math.min(1, Math.max(0, (pv - 0.15) / 0.85));
+  return 1 - (1 - t) * (1 - t) * (1 - t);
+};
 const mix = (a: number, b: number, k: number) => {
   'worklet';
   return a + (b - a) * k;
@@ -197,21 +203,8 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
   useEffect(() => {
     lp.value = withTiming(p.lyricsOpen && !land ? 1 : 0, reduced ? { duration: 200 } : MOVE);
   }, [p.lyricsOpen, land]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Xoay ngang: tự mở lời (bố cục đĩa trái · lời phải); xoay dọc lại: trả về đúng như trước khi xoay
-  const lyrBefore = useRef<boolean | null>(null);
+  // (Xoay ngang tự mở lời / xoay dọc trả lại như cũ: nay tính ở VinylNowPlaying trong NowPlayingScreen.tsx, không đổi state ở đây nữa)
   const firstLand = useRef(true);
-  useEffect(() => {
-    if (land) {
-      if (lyrBefore.current === null) {
-        lyrBefore.current = p.lyricsOpen;
-        if (!p.lyricsOpen) p.setLyricsOpen(true);
-      }
-    } else if (lyrBefore.current !== null) {
-      const before = lyrBefore.current;
-      lyrBefore.current = null;
-      p.setLyricsOpen(before);
-    }
-  }, [land]); // eslint-disable-line react-hooks/exhaustive-deps
   // Hiệu ứng lúc xoay máy: đĩa trượt vào từ bên trái, phần còn lại (nửa phải / nút) trượt nhẹ từ bên phải và hiện dần.
   // Bố cục đổi ngay khung đầu tiên sau khi xoay (iOS đã xoay cả màn hình) → chỉ cần "đặt vào chỗ" cho êm, không giật cục
   const ori = useSharedValue(1);
@@ -229,7 +222,11 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
     roll.value = -170;
     roll.value = withSpring(0, { damping: 16, stiffness: 120, mass: 1 });
   }, [land]); // eslint-disable-line react-hooks/exhaustive-deps
-  const discIn = useAnimatedStyle(() => ({ opacity: Math.min(1, 0.35 + 0.65 * ori.value), transform: [{ translateX: (1 - ori.value) * -110 }] }));
+  // + lúc mở / đóng player: cả đĩa (và thanh thời gian bám theo đĩa) trượt từ ngoài mép trái vào góc
+  const discIn = useAnimatedStyle(() => {
+    const e = reduced ? 1 : openEase(playerProgress.value);
+    return { opacity: Math.min(1, 0.35 + 0.65 * ori.value), transform: [{ translateX: (1 - ori.value) * -110 - (1 - e) * W * 0.6 }] };
+  });
   const restIn = useAnimatedStyle(() => ({ opacity: Math.min(1, ori.value), transform: [{ translateX: (1 - ori.value) * 40 }] }));
   // Khung lời dựng SẴN (ẩn) ngay khi player hiện ra, lời cũng được tải sẵn (NowPlayingScreen) → vuốt lên là chữ có liền,
   // không còn khoảng "đang tải" / nháy lúc khung lời mới dựng và đo các dòng
@@ -264,6 +261,36 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
   }, [settled, swipe.active]); // eslint-disable-line react-hooks/exhaustive-deps
   const lyricsLive = fg && ((dbg.lyricsPre && lyricsReady) || p.lyricsOpen);
 
+  // ---- Thanh thời gian: dò lỗi "mở player lên mất thanh"
+  // Thanh bị gỡ khi app xuống nền (fg) và gắn lại lúc app lên lại — lúc đó player thường đang ẩn (display: none) nên vùng vẽ
+  // Skia có thể dựng ở cỡ 0×0 và không tự vẽ lại. Nên: thanh nào được gắn lại trong lúc player ẩn thì khi mở player xong
+  // dựng lại nó một lần (đổi key). Mỗi lần mở xong ghi 1 dòng tình trạng thanh để dò khi vẫn còn mất
+  const [arcKey, setArcKey] = useState(0);
+  const arcHidden = useRef(false);
+  const arcSize = useRef({ w: 0, h: 0 });
+  useEffect(() => {
+    if (fg && !swipe.active) arcHidden.current = true;
+  }, [fg]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!settled) return;
+    const rebuilt = arcHidden.current;
+    if (rebuilt) {
+      arcHidden.current = false;
+      setArcKey((k) => k + 1);
+    }
+    const id = setTimeout(() => {
+      const { w, h } = arcSize.current;
+      const why = !dbg.arc ? 'tắt trong bảng dò lỗi' : !fg ? 'đang gỡ (app ở nền)' : w < 1 || h < 1 ? `khung vẽ ${Math.round(w)}×${Math.round(h)}` : '';
+      log(
+        'ui',
+        `thanh thời gian: ${why ? `KHÔNG hiện — ${why}` : `có · khung ${Math.round(w)}×${Math.round(h)}`}` +
+          `${rebuilt ? ' · vừa dựng lại (đã gắn lúc player ẩn)' : ''} · ${p.isPlaying ? 'đang phát' : 'đang dừng'}` +
+          ` · ${p.duration > 0 ? `dài ${Math.round(p.duration)}s` : 'chưa có độ dài'}${p.loading ? ' · đang tải' : ''}${land ? ' · ngang' : ''}`
+      );
+    }, 400);
+    return () => clearTimeout(id);
+  }, [settled]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ---- xoay nhãn: chạy trên luồng giao diện; tạm dừng lúc player đang phóng to / thu nhỏ hoặc đang ẩn
   const rot = useSharedValue(0);
   // Bắt đầu xoay đĩa / chạy khói trễ ~0,12s sau khi mở xong: đúng khung hình cuối của hiệu ứng mở, màn player vừa thôi là
@@ -292,25 +319,14 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
   }, [spinning]); // eslint-disable-line react-hooks/exhaustive-deps
   const run = late && fg && !reduced;
 
-  // ---- Báo vị trí nhãn đĩa cho hiệu ứng mở / đóng player (PlayerTransition): ảnh bìa bay từ mini player đáp ĐÚNG vào
-  // nhãn (tròn, đúng cỡ, xoay khớp góc nhãn đang quay) thay vì thành hình vuông lớn ở đầu màn hình như player thường.
-  // Chạy trên luồng giao diện, chỉ ghi vài con số mỗi khung
+  // Báo cho hiệu ứng mở / đóng player (PlayerTransition) biết đang dùng đĩa than: ảnh bìa từ mini player chỉ mờ nhanh đi,
+  // không bay vào nhãn nữa — đĩa tự lăn vào góc (discIn). Tyson 20/11: bìa bay vào nhãn nhìn chưa mượt
   useEffect(() => {
     vinylArt.on.value = 1;
     return () => {
       vinylArt.on.value = 0;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const { cx0: vx0, cy0: vy0, cx1: vx1, cy1: vy1 } = g;
-  useAnimatedReaction(
-    () => [mix(vx0, vx1, lp.value), mix(vy0, vy1, lp.value), rot.value + roll.value],
-    ([x, y, r]) => {
-      vinylArt.x.value = x - LR;
-      vinylArt.y.value = y - LR;
-      vinylArt.d.value = LR * 2;
-      vinylArt.rot.value = r;
-    }
-  );
 
   // ---- đổi bài: đĩa cũ trượt đi rồi đĩa bài mới trượt vào (thanh thời gian đứng yên, nền + màu đổi dần cùng lúc)
   //  · đang xem đĩa: trượt chéo ra góc trên trái (khuất hẳn), đĩa mới trượt từ góc đó vào
@@ -558,8 +574,12 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
       )}
 
       {fg && dbg.arc && (
-        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, discIn]}>
-          <VinylArc g={g} lp={lp} accent={accent} scrubSV={scrubSV} posSV={posSV} holdRef={holdRef} playing={p.isPlaying} duration={p.duration} loading={p.loading} failed={p.failed} />
+        <Animated.View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, discIn]}
+          onLayout={(e) => (arcSize.current = { w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}
+        >
+          <VinylArc key={arcKey} g={g} lp={lp} accent={accent} scrubSV={scrubSV} posSV={posSV} holdRef={holdRef} playing={p.isPlaying} duration={p.duration} loading={p.loading} failed={p.failed} />
         </Animated.View>
       )}
 
@@ -813,7 +833,8 @@ const VinylLabel = React.memo(function VinylLabel({
     transform: [
       { translateX: mix(cx0, cx1, lp.value) + swapDX(sdx0, lp.value) * sw.value },
       { translateY: mix(cy0, cy1, lp.value) + swapDY(sdy0, sdy1, lp.value) * sw.value },
-      { rotate: `${rot.value + roll.value}deg` },
+      // lăn vào lúc mở player: nhãn quay ngược thêm ~200° rồi về đúng góc → nhìn như đĩa lăn chứ không chỉ trượt
+      { rotate: `${rot.value + roll.value - 200 * (1 - openEase(playerProgress.value))}deg` },
     ],
   }));
   // đổi bài: nhãn mờ đi rồi hiện ảnh mới

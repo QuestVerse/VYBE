@@ -241,7 +241,7 @@ function useFxPicker() {
 const V_ICON = { width: 40, height: 40, alignItems: 'center' as const, justifyContent: 'center' as const };
 
 function VinylNowPlaying({ onClose }: { onClose: () => void }) {
-  const { theme } = useTheme();
+  const { theme, landscape } = useTheme();
   ON = onColor(theme.colors.accent);
   const t = useT();
   const { fxOn, pickFx } = useFxPicker();
@@ -253,11 +253,23 @@ function VinylNowPlaying({ onClose }: { onClose: () => void }) {
   const title = idle ? t('np.idleTitle') : track.title;
   const artist = idle ? t('np.idleArtist') : track.artist;
   const swipe = usePlayerTransition();
-  const [showLyrics, setShowLyricsState] = useState(() => lyricsOpen);
-  const setShowLyrics = useCallback(
-    (v: boolean | ((p: boolean) => boolean)) => setShowLyricsState((p) => (lyricsOpen = typeof v === 'function' ? v(p) : v)),
-    []
-  );
+  // Lời: màn dọc nhớ theo người dùng; màn ngang lúc nào xoay vào cũng mở lời sẵn (đĩa trái · lời phải), xoay dọc lại thì về
+  // đúng như trước. Tính thẳng từ hướng màn hình ngay trong lần vẽ này — trước đây đổi bằng setState trong effect sau khi xoay
+  // → player vẽ lại thêm 1–2 lần (~60ms mỗi lần) đúng lúc đang xoay (log 20/11 12:29)
+  const [portLyrics, setPortLyrics] = useState(() => lyricsOpen);
+  const [landLyrics, setLandLyrics] = useState(true);
+  const [seenLand, setSeenLand] = useState(landscape);
+  if (seenLand !== landscape) {
+    setSeenLand(landscape);
+    if (landscape && !landLyrics) setLandLyrics(true);
+  }
+  const showLyrics = landscape ? landLyrics : portLyrics;
+  const landRef = useRef(landscape);
+  landRef.current = landscape;
+  const setShowLyrics = useCallback((v: boolean | ((p: boolean) => boolean)) => {
+    if (landRef.current) setLandLyrics((p) => (typeof v === 'function' ? v(p) : v));
+    else setPortLyrics((p) => (lyricsOpen = typeof v === 'function' ? v(p) : v));
+  }, []);
   const [queueOpen, setQueueOpen] = useState(false);
   // tải lời sẵn ngay khi player hiện ra → vuốt đĩa lên là có chữ liền
   const vf = useVinylFlags(); // bảng dò lỗi: tắt 'Tải lời sẵn khi mở player' → chỉ tải khi bấm nút lời

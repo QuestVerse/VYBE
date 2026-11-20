@@ -12,7 +12,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 const MaskedView = RNMaskedView as unknown as React.ComponentType<any>;
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Image, PixelRatio, Pressable, RefreshControl, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
-import Animated, { Easing, FadeOut, FadeInDown, FadeInLeft, FadeInRight, useAnimatedScrollHandler, useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
+import Animated, { Easing, FadeOut, useAnimatedScrollHandler, useAnimatedStyle, useReducedMotion, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated';
 import { useDockCollapse } from '../components/dockCollapse';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeProvider';
@@ -751,10 +751,21 @@ export function HomeScreen() {
   }
   const reducedMotion = useReducedMotion();
   const settling = !reducedMotion && Date.now() - rotatedAt.current < 900;
+  // CHỈ trượt, không mờ dần: Liquid Glass của iOS không vẽ nếu được dựng lúc khung cha còn mờ (độ hiện ~0) và không tự vẽ lại
+  // → bản trước dùng FadeIn… làm kính các ô ở Home mất hẳn sau khi xoay (ảnh 20/11 12:30)
   const enter = (i: number, from: 'up' | 'left' | 'right') => {
     if (!settling) return undefined;
-    const base = from === 'left' ? FadeInLeft : from === 'right' ? FadeInRight : FadeInDown;
-    return base.delay(i * 45).springify().damping(15).stiffness(170).mass(0.9);
+    const dx = from === 'left' ? -60 : from === 'right' ? 60 : 0;
+    const dy = from === 'up' ? 40 : 0;
+    const delay = i * 45;
+    return () => {
+      'worklet';
+      const cfg = { damping: 15, stiffness: 170, mass: 0.9 };
+      return {
+        initialValues: { transform: [{ translateX: dx }, { translateY: dy }] },
+        animations: { transform: [{ translateX: withDelay(delay, withSpring(0, cfg)) }, { translateY: withDelay(delay, withSpring(0, cfg)) }] },
+      };
+    };
   };
   // Offline: chỉ giữ các mục đọc được từ máy (playlist của mình, nghe gần đây), thêm "Nhạc đã tải" lên đầu
   const visible = theme.home.sections.filter((s) => !theme.home.hidden.includes(s) && (!offline || s === 'myPlaylists' || s === 'recent'));

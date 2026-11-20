@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Track } from '../data/mock';
+import { crumb } from '../data/applog';
 
 export type LyricLine = { t: number | null; text: string };
 export type Lyrics = { synced: boolean; lines: LyricLine[]; source?: string }; // source: lời lấy từ đâu (hiện nhỏ ở cuối lời)
@@ -160,9 +161,12 @@ export function useLyrics(track: Track, enabled: boolean, duration = 0) {
     // tải mới (log 13/11: tra lời Zing 2 lần liền cho cùng một bài)
     let job = inflight.get(track.id);
     if (!job) {
+      const t0 = Date.now();
+      crumb('tìm lời: bắt đầu');
       job = fetchLyrics(track, duration)
         .catch(() => null)
         .then((l) => {
+          crumb(`tìm lời: xong sau ${Date.now() - t0}ms`);
           cache.set(track.id, l);
           inflight.delete(track.id);
           return l;

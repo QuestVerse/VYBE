@@ -2,7 +2,7 @@ import React, { useEffect, useLayoutEffect, useRef } from 'react';
 import { AppState, useWindowDimensions } from 'react-native';
 import { makeMutable, useFrameCallback } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
-import { getLogContext, justResumed, log } from '../data/applog';
+import { crumb, getLogContext, justResumed, log } from '../data/applog';
 
 // Khựng ở luồng giao diện (UI thread: hiệu ứng, cuộn, kéo thả): khung hình cách nhau quá lâu thì ghi vào nhật ký.
 // Bỏ qua khoảng cách rất dài (> 3s) vì đó là lúc app vào nền / màn hình tắt chứ không phải giật.
@@ -11,6 +11,7 @@ import { getLogContext, justResumed, log } from '../data/applog';
 const marks: Record<string, number> = {};
 export function markRender(name: string) {
   marks[name] = performance.now();
+  crumb(`vẽ ${name}`);
 }
 function recent(ms: number) {
   const now = performance.now();
@@ -43,11 +44,11 @@ export function useRenderProbe(name: string, deps: Record<string, unknown>) {
     markRender(name);
     const dt = performance.now() - t0;
     if (dt < 50 || justResumed()) return;
+    // > 1 giây: không phải thời gian vẽ — màn đang đóng băng (tab ẩn) đã vẽ xong từ trước, tới lúc hiện lại React mới "chốt" nó.
+    // Bản trước ghi thành "vẽ lại Home: 4121ms" gây hiểu nhầm → giờ bỏ qua
+    if (dt > 1000) return;
     const why = changed == null ? 'lần đầu' : changed.length ? `đổi: ${changed.join(', ')}` : 'trang cha vẽ lại / state riêng';
-    // > 1,5s: thường là màn đang ẩn (đóng băng) được vẽ sẵn, tới lúc mở lại mới hiện ra — vẫn ghi (để dò vụ đổi theme đứng
-    // 5–9 giây) nhưng đánh dấu để không nhầm là khựng thật
-    const note = dt > 1500 ? ' · (có thể là màn đang ẩn vừa mở lại)' : '';
-    log('jank', `vẽ lại ${name}: ${Math.round(dt)}ms (lần ${n.current}) · ${why}${note}`);
+    log('jank', `vẽ lại ${name}: ${Math.round(dt)}ms (lần ${n.current}) · ${why}`);
   });
 }
 

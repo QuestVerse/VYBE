@@ -7,7 +7,7 @@ import { StatsScreen } from './src/screens/StatsScreen';
 import { AppleDock } from './src/components/AppleDock';
 import { ZyxDock } from './src/components/ZyxDock';
 import { OfflineBanner } from './src/components/OfflineBanner';
-import { ActivityIndicator, Animated, Platform, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Animated, AppState, Platform, StatusBar, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ScreenSizeProvider } from './src/components/ScreenSize';
@@ -42,7 +42,7 @@ import { CollectionScreen } from './src/screens/CollectionScreen';
 import { ArtistScreen } from './src/screens/ArtistScreen';
 import { FadeLayer, SwipeBack } from './src/nav/SwipeBack';
 import RAnimated, { cancelAnimation, Easing as REasing, makeMutable, SharedValue, useAnimatedReaction, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
-import { GlassEpoch } from './src/components/Glass';
+import { GlassEpoch, GlassFade, glassRebuildReason } from './src/components/Glass';
 import { scheduleOnRN } from 'react-native-worklets';
 import { AppBackground } from './src/components/AppBackground';
 import { AmbientEffect } from './src/components/AmbientLayer';
@@ -101,19 +101,59 @@ function TabPane({ o, x, visible, active, pre, children }: { o: SharedValue<numb
   // Tab vừa hiện rõ hẳn (mờ dần xong): tăng "lần hiện" → các tấm Liquid Glass trong tab dựng lại ở độ mờ 100% (xem GlassEpoch)
   const [epoch, setEpoch] = useState(0);
   const bump = useCallback(() => setEpoch((e) => e + 1), []);
+  const bumpShown = useCallback(() => {
+    glassRebuildReason('tab hiện rõ');
+    bump();
+  }, [bump]);
   useAnimatedReaction(
     () => o.value > 0.999,
     (full, was) => {
-      if (full && was === false) scheduleOnRN(bump);
+      if (full && was === false) scheduleOnRN(bumpShown);
     }
   );
+  // Dựng lại kính thêm 2 lúc nữa (chỉ tab đang hiện rõ): app vừa vào lại từ nền, và xoay máy xong ~1 giây.
+  // Log 20/11: kính ở Home mất cả sau khi thoát app ra vào lại lẫn sau khi xoay
+  const oRef = useRef(o);
+  useEffect(() => {
+    let id: ReturnType<typeof setTimeout> | undefined;
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st !== 'active') return;
+      clearTimeout(id);
+      id = setTimeout(() => {
+        if (oRef.current.value > 0.999) {
+          glassRebuildReason('app vào lại');
+          bump();
+        }
+      }, 300);
+    });
+    return () => {
+      clearTimeout(id);
+      sub.remove();
+    };
+  }, [bump]);
+  const win = useWindowDimensions();
+  const land = win.width > win.height;
+  const landSeen = useRef(land);
+  useEffect(() => {
+    if (landSeen.current === land) return;
+    landSeen.current = land;
+    const id = setTimeout(() => {
+      if (oRef.current.value > 0.999) {
+        glassRebuildReason('xoay xong');
+        bump();
+      }
+    }, 1000);
+    return () => clearTimeout(id);
+  }, [land, bump]);
   return (
     <RAnimated.View pointerEvents={active ? 'auto' : 'none'} style={[StyleSheet.absoluteFill, { display: visible ? 'flex' : 'none' }, style]}>
       {/* Tab đang ẩn: đóng băng, không vẽ lại cho tới khi quay lại tab đó */}
       {/* pre: đang được dựng sẵn lúc rảnh → cho vẽ một lần (vẫn ẩn), xong thì đóng băng như tab ẩn khác */}
+      <GlassFade.Provider value={o}>
       <GlassEpoch.Provider value={epoch}>
         <Freeze freeze={!visible && !pre}>{children}</Freeze>
       </GlassEpoch.Provider>
+      </GlassFade.Provider>
     </RAnimated.View>
   );
 }
@@ -279,16 +319,30 @@ function Root() {
   useEffect(() => {
     let off = false;
     let timer: ReturnType<typeof setTimeout>;
+    // Chờ lúc rảnh, nhưng tối đa 1,5 giây: requestIdleCallback có thể KHÔNG BAO GIỜ chạy khi màn hình luôn có chuyển động
+    // (hiệu ứng nền, đĩa xoay...) → trước đây tab dựng sẵn cuối cùng (Tìm kiếm) bị kẹt ở trạng thái "đang dựng sẵn", không được
+    // đóng băng, nên bị vẽ lại 3 lần mỗi lần xoay máy / đổi theme dù không ai thấy (log 20/11 12:29: 60–80ms mỗi lần)
     const ric = (cb: () => void) => {
+      let done = false;
+      const once = () => {
+        if (done) return;
+        done = true;
+        cb();
+      };
       const r = (globalThis as { requestIdleCallback?: (cb: () => void) => void }).requestIdleCallback;
-      if (r) r(cb);
-      else cb();
+      if (r) r(once);
+      setTimeout(once, r ? 1500 : 0);
     };
     const step = () => {
       if (off) return;
       const id = TAB_ORDER.find((t) => !visited.has(t));
-      if (!id) return startTransition(() => setPreTab(null));
+      if (!id) {
+        log('ui', 'dựng sẵn tab: xong, đóng băng lại');
+        setPreTab(null);
+        return;
+      }
       visited.add(id);
+      log('ui', `dựng sẵn tab: ${id}`);
       startTransition(() => setPreTab(id));
       timer = setTimeout(() => ric(step), 1000);
     };

@@ -1,4 +1,6 @@
-import React, { createContext, useContext } from 'react';
+import React, { createContext, useContext, useEffect } from 'react';
+import type { SharedValue } from 'react-native-reanimated';
+import { getLogContext, log } from '../data/applog';
 import { Platform, StyleSheet, View } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -51,6 +53,42 @@ export const hasLiquidGlass = !!LG;
 // (tài liệu expo-glass-effect SDK 58: "At very low opacity, the glass effect does not render") → đổi tab xong thì kính
 // trong Thư viện / Tìm kiếm... mất hiệu ứng. Đổi key theo số này = dựng lại tấm kính một lần, lúc tab đã rõ 100%
 export const GlassEpoch = createContext(0);
+// Độ hiện của tab đang chứa kính (TabPane đưa vào) — để nhật ký biết tấm kính được dựng lúc tab còn mờ hay đã rõ
+export const GlassFade = createContext<SharedValue<number> | null>(null);
+
+// ---- Nhật ký dò kính mất hiệu ứng: gom các lần dựng tấm Liquid Glass trong ~0,6 giây thành 1 dòng.
+// Chỉ ghi khi đáng nghi (có tấm dựng lúc tab còn mờ) hoặc khi kính được dựng lại có chủ đích (kèm lý do)
+let gN = 0;
+let gLow = 0;
+let gMinO = 1;
+let gWhy = '';
+let gTimer: ReturnType<typeof setTimeout> | null = null;
+export function glassRebuildReason(why: string) {
+  gWhy = gWhy ? `${gWhy}, ${why}` : why;
+}
+function glassFlush() {
+  gTimer = null;
+  const n = gN, low = gLow, minO = gMinO, why = gWhy;
+  gN = 0;
+  gLow = 0;
+  gMinO = 1;
+  gWhy = '';
+  if (!low && !why) return;
+  log(
+    'ui',
+    `kính: dựng ${n} tấm · ${getLogContext() || '?'}` +
+      (why ? ` · dựng lại vì ${why}` : '') +
+      (low ? ` · ${low} tấm dựng lúc tab còn mờ (độ hiện ${minO.toFixed(2)}) → có thể mất hiệu ứng tới lần tab hiện lại` : '')
+  );
+}
+function noteGlassMount(o: number | null) {
+  gN++;
+  if (o != null && o < 0.98) {
+    gLow++;
+    gMinO = Math.min(gMinO, o);
+  }
+  if (!gTimer) gTimer = setTimeout(glassFlush, 600);
+}
 
 // Ba loại kính (Theme Studio): Trong / Mờ / Khói. Thanh "Độ mờ kính" chỉnh độ đậm bên trong loại đó
 // Mờ (frost) làm theo kính của màn đa nhiệm iOS: nhoè đậm, phủ màu theme dày hơn (ngả tối với theme tối),
@@ -79,6 +117,7 @@ export const SQUIRCLE = { borderCurve: 'continuous' as const };
 export function GlassFill({ radius = 0, solid = 0, slab = false, dark: forceDark = false, noRim = false }: { radius?: number; solid?: number; slab?: boolean; dark?: boolean; noRim?: boolean }) {
   const { theme } = useTheme();
   const epoch = useContext(GlassEpoch);
+  const fade = useContext(GlassFade);
   const glassRgb = forceDark ? '22,22,26' : theme.colors.glassRgb;
   const glassTint = forceDark ? 'dark' : theme.colors.glassTint;
   const border = forceDark ? 'rgba(255,255,255,0.14)' : theme.colors.border;
@@ -86,6 +125,10 @@ export function GlassFill({ radius = 0, solid = 0, slab = false, dark: forceDark
   const material: GlassMaterial = theme.glass.material ?? 'clear';
   const dark = glassTint === 'dark';
   const real = Platform.OS !== 'web';
+  const isLG = !!LG && !noRim && material !== 'neon' && material !== 'matte';
+  useEffect(() => {
+    if (isLG) noteGlassMount(fade ? fade.value : null);
+  }, [epoch, isLG]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- Neon: gần như trong suốt (nhoè rất nhẹ + lớp tối mỏng), chỉ có viền phát sáng màu đèn (chọn trong Theme Studio).
   // Quầng sáng toả RA NGOÀI nên lớp viền nằm ngoài khung cắt (không overflow: hidden), còn lớp nhoè nằm trong khung cắt
