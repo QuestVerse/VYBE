@@ -4,7 +4,7 @@
 //  - giữ / kéo trên thanh: vệt chọn phồng thành kính lúp nổi lên, phóng to icon bên dưới, trượt theo tay, kéo nhanh thì giãn
 //    ngang dẹt dọc; thả tay hít vào tab gần nhất
 //  - cuộn trang xuống: thanh tab thu thành nút tròn (icon tab đang mở), mini player chui xuống nằm giữa; cuộn lên thì mở lại
-// Chỉ dùng khi màn hình dọc; xoay ngang thì App dùng lại dock dạng thanh dọc
+// Chỉ dùng khi màn hình dọc; xoay ngang thì App dùng AppleDockLand (AppleDockLand.tsx)
 import React, { useEffect, useRef } from 'react';
 import { GestureDetector, usePanGesture, useSimultaneousGestures, useTapGesture } from 'react-native-gesture-handler';
 import { scheduleOnRN } from 'react-native-worklets';
@@ -48,12 +48,12 @@ function BaseCell({ i, tw, lensX, lensOn, children }: { i: number; tw: number; l
   return <Animated.View style={st}>{children}</Animated.View>;
 }
 
-function Cell({ id, on, labels, width }: { id: Tab; on: boolean; labels: boolean; width: number }) {
+export function Cell({ id, on, labels, width, height = AM.H }: { id: Tab; on: boolean; labels: boolean; width: number; height?: number }) {
   const { theme } = useTheme();
   const t = useT();
   const color = on ? theme.colors.accent : theme.colors.text;
   return (
-    <View style={{ width, height: AM.H, alignItems: 'center', justifyContent: 'center' }}>
+    <View style={{ width, height, alignItems: 'center', justifyContent: 'center' }}>
       <DockGlyph id={id} size={labels ? 26 : 28} color={color} />
       {labels && (
         <Text numberOfLines={1} style={{ color, fontSize: 10, fontWeight: '600', marginTop: 2 }}>

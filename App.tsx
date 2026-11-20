@@ -5,6 +5,7 @@ import { updateCoverTint } from './src/theme/coverTint';
 import { LogScreen } from './src/screens/LogScreen';
 import { StatsScreen } from './src/screens/StatsScreen';
 import { AppleDock } from './src/components/AppleDock';
+import { AppleDockLand } from './src/components/AppleDockLand';
 import { ZyxDock } from './src/components/ZyxDock';
 import { OfflineBanner } from './src/components/OfflineBanner';
 import { ActivityIndicator, Animated, Platform, StatusBar, StyleSheet, Text, View } from 'react-native';
@@ -376,10 +377,13 @@ function Root() {
         <BackdropBlur />
         <OfflineBanner />
         {/* Dock Apple Music có mini player riêng (viên thuốc) → không dựng bong bóng mini player */}
-        {!((theme.dock.mode === 'apple' || theme.dock.mode === 'zyx') && !landscape) && <MiniPlayer hidden={tab === 'player' || playerUp} onOpen={() => setTab('player')} />}
+        {!(theme.dock.mode === 'apple' || (theme.dock.mode === 'zyx' && !landscape)) && <MiniPlayer hidden={tab === 'player' || playerUp} onOpen={() => setTab('player')} />}
           {/* Dock: kiểu Apple Music hoặc dạng thanh (kéo đổi chỗ được) — Cài đặt → Kiểu dock */}
           {theme.dock.mode === 'apple' && !landscape ? (
             <AppleDock active={tab} onChange={go} onOpenPlayer={() => setTab('player')} hidden={tab === 'player' || playerUp} />
+          ) : theme.dock.mode === 'apple' ? (
+            // xoay ngang: dock dọc bên phải, nút tìm kiếm góc dưới phải, mini player viên thuốc giữa đáy
+            <AppleDockLand active={tab} onChange={go} onOpenPlayer={() => setTab('player')} hidden={tab === 'player' || playerUp} />
           ) : theme.dock.mode === 'zyx' && !landscape ? (
             <ZyxDock active={tab} onChange={go} onOpenPlayer={() => setTab('player')} hidden={tab === 'player' || playerUp} />
           ) : (
