@@ -10,7 +10,8 @@ import { cacheGet, cacheSet } from './db';
 //  - swipe: vuốt quay lại từ cạnh trái
 //  - ui: mở / đóng trang, đổi tab, app vào nền / quay lại
 // Giữ 1000 dòng gần nhất, lưu xuống máy vài giây một lần (và ngay khi có lỗi / app vào nền) nên còn sau khi tắt app.
-export type LogTag = 'music' | 'fx' | 'error' | 'jank' | 'swipe' | 'ui' | 'motion';
+//  - perf: tóm tắt hiệu năng định kỳ (fps, khung rớt, JS trễ, bộ nhớ) kèm màn đang xem + theme / hiệu ứng / kính
+export type LogTag = 'music' | 'fx' | 'error' | 'jank' | 'swipe' | 'ui' | 'motion' | 'perf';
 export interface LogLine { t: number; tag: LogTag; msg: string; bg?: boolean }
 
 const KEY = 'applog:v1';

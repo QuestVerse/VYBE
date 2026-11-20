@@ -1,4 +1,5 @@
-import React, { useLayoutEffect, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useRef } from 'react';
+import { AppState, useWindowDimensions } from 'react-native';
 import { makeMutable, useFrameCallback } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 import { getLogContext, justResumed, log } from '../data/applog';
@@ -127,10 +128,111 @@ export function endMotionAny(extra = '') {
   else endMotion(extra);
 }
 
+// ---------------- Tóm tắt hiệu năng định kỳ (mục "Hiệu năng" trong Nhật ký) ----------------
+// Luồng giao diện đếm MỌI khung hình (không chỉ lúc có chuyển động): số khung, số khung rớt, khung dài nhất.
+// Luồng JS: một nhịp 250ms, trễ hơn dự kiến bao nhiêu = JS đang bận bấy nhiêu (rẻ hơn chạy requestAnimationFrame liên tục).
+// Mỗi 20 giây ghi một dòng nếu có rớt khung / JS trễ đáng kể, còn không thì 60 giây một dòng "ổn" để biết mốc bình thường.
+// Kèm: đang ở đâu (tab / trang / player), theme + hiệu ứng nền + kính + kiểu player (App.tsx báo qua setPerfInfo), bộ nhớ JS
+const P = { frames: makeMutable(0), dropped: makeMutable(0), worst: makeMutable(0) };
+let perfInfo = '';
+export function setPerfInfo(s: string) {
+  perfInfo = s;
+}
+let winStart = Date.now();
+let jsWorst = 0;
+let lastQuiet = 0;
+function heapMB() {
+  try {
+    const st = (globalThis as any).HermesInternal?.getInstrumentedStats?.();
+    const b = st?.js_heapSize ?? st?.js_allocatedBytes;
+    return typeof b === 'number' ? `${Math.round(b / 1048576)}MB` : '';
+  } catch {
+    return '';
+  }
+}
+function perfFlush(force = false) {
+  const now = Date.now();
+  const ms = now - winStart;
+  if (ms < 1000) return;
+  const frames = P.frames.value;
+  const dropped = P.dropped.value;
+  const worst = P.worst.value;
+  const js = jsWorst;
+  P.frames.value = 0;
+  P.dropped.value = 0;
+  P.worst.value = 0;
+  jsWorst = 0;
+  winStart = now;
+  if (justResumed() || AppState.currentState !== 'active') return;
+  const base = M.base.value;
+  const hz = Math.round(1000 / base);
+  const fps = Math.round((frames * 1000) / ms);
+  const pct = frames + dropped > 0 ? (dropped * 100) / (frames + dropped) : 0;
+  const bad = dropped > 2 || js > 120;
+  // Ổn định: 60 giây mới ghi một dòng (đủ để biết mốc bình thường của từng theme mà không làm đầy nhật ký)
+  if (!bad && !force && now - lastQuiet < 60000) return;
+  if (!bad) lastQuiet = now;
+  const c = getLogContext();
+  const mem = heapMB();
+  log(
+    'perf',
+    [
+      `${Math.round(ms / 1000)}s ở ${c || '?'}`,
+      `UI ~${fps}/${hz}fps, rớt ${dropped} khung (${pct.toFixed(1)}%), khung dài nhất ${Math.round(worst)}ms`,
+      `JS trễ lâu nhất ${Math.round(js)}ms`,
+      mem && `bộ nhớ JS ${mem}`,
+      perfInfo,
+    ]
+      .filter(Boolean)
+      .join(' · ')
+  );
+}
+
 export function JankMonitor() {
+  // Nhịp đo luồng JS + gom số liệu mỗi 20 giây
+  useEffect(() => {
+    let last = performance.now();
+    const tick = setInterval(() => {
+      const now = performance.now();
+      jsWorst = Math.max(jsWorst, now - last - 250);
+      last = now;
+    }, 250);
+    const flush = setInterval(() => perfFlush(), 20000);
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st !== 'active') perfFlush(true); // xuống nền: ghi nốt đoạn đang đo
+      else {
+        winStart = Date.now();
+        P.frames.value = 0;
+        P.dropped.value = 0;
+        P.worst.value = 0;
+        jsWorst = 0;
+      }
+    });
+    return () => {
+      clearInterval(tick);
+      clearInterval(flush);
+      sub.remove();
+    };
+  }, []);
+  // Xoay màn hình (dọc ⇄ ngang): đo như một chuyển động (các khối Home nảy vào chỗ, đĩa than lăn vào...)
+  const { width, height } = useWindowDimensions();
+  const landRef = useRef(width > height);
+  useEffect(() => {
+    const land = width > height;
+    if (land === landRef.current) return;
+    landRef.current = land;
+    beginMotion('xoay màn hình', `${land ? 'dọc → ngang' : 'ngang → dọc'} · ${getLogContext()}`);
+    const id = setTimeout(() => endMotion(), 900);
+    return () => clearTimeout(id);
+  }, [width, height]);
   useFrameCallback((f) => {
     'worklet';
     const d = f.timeSincePreviousFrame;
+    if (d != null && d < 3000) {
+      P.frames.value += 1;
+      if (d > P.worst.value) P.worst.value = d;
+      if (d > M.base.value * 1.6) P.dropped.value += Math.max(1, Math.round(d / M.base.value) - 1);
+    }
     // Dò nhịp màn hình thật, làm tròn về 120 / 90 / 60Hz: một khung lệch nhịp (4ms) từng làm nhịp thành 225Hz
     // → mọi khung 8ms đều bị tính là "rớt" dù chạy đủ 120fps
     if (d != null && d > 4) {

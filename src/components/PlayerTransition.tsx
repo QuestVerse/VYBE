@@ -39,6 +39,10 @@ export const playerProgress = makeMutable(0);
 // 1 = tạm gỡ hẳn màn player (đang đóng) khỏi khung hình — lúc đổi theme chụp ảnh màn hình (ThemeTransition):
 // player đóng chỉ trong suốt (opacity 0) chứ vẫn nằm đó, ảnh chụp phải vẽ cả nó (ảnh bìa to, khói Skia, kính mờ...) → rất chậm
 export const playerShotHide = makeMutable(0);
+// Player kiểu ĐĨA THAN đang dùng (on = 1): nhãn đĩa ở đâu (góc trên trái x, y + đường kính d, trong toạ độ màn hình khi
+// player mở hẳn) và đang xoay góc nào. Ảnh bìa bay đáp đúng vào nhãn: co thành hình tròn, xoay khớp góc, rồi mới mờ đi
+// lộ nhãn thật bên dưới. VinylPlayer ghi các số này (luồng giao diện); 0 = player thường → ảnh đáp thành ô vuông ở đầu
+export const vinylArt = { on: makeMutable(0), x: makeMutable(0), y: makeMutable(0), d: makeMutable(0), rot: makeMutable(0) };
 // Rect.fade: lớp hiệu ứng mờ dần trong đoạn p 0,08 → 0 (lúc này player đã gần bằng đúng khung nút, lệch vài điểm)
 export const FADE_LAND = 0.08;
 
@@ -352,10 +356,26 @@ export function PlayerTransition({ open, onClose, onClosed, onOpened, onReopen, 
   // Ảnh bay là hình vuông cạnh A = cạnh ngắn của màn hình. Màn hình ngang: trước đây lấy cạnh = bề ngang (dài hơn
   // chiều cao) nên ảnh thò ra dưới khung player lúc thu nhỏ → cạnh dưới vuông, trông sượng
   const A = Math.min(W, H);
+  // Đĩa than: góc nhãn đổi về khoảng −180…180 để ảnh xoay đường ngắn nhất tới khớp nhãn
+  const vinylTurn = () => {
+    'worklet';
+    return ((((vinylArt.rot.value % 360) + 540) % 360) - 180);
+  };
+  const artScaleAt = (pv: number) => {
+    'worklet';
+    return interpolate(pv, [0, 1], [aw.value / A, vinylArt.on.value ? vinylArt.d.value / A : 1]);
+  };
+  const artRadiusNow = (pv: number) => {
+    'worklet';
+    return vinylArt.on.value ? interpolate(pv, [0, 1], [ar.value, vinylArt.d.value / 2]) : artRadiusAt(pv);
+  };
   const artClip = useAnimatedStyle(() => {
-    const sw = interpolate(p.value, [0, 1], [aw.value / A, 1]);
-    const r = artRadiusAt(p.value);
-    return { borderRadius: r / sw };
+    const sw = artScaleAt(p.value);
+    const r = artRadiusNow(p.value);
+    return {
+      borderRadius: r / sw,
+      transform: vinylArt.on.value ? [{ rotate: `${interpolate(p.value, [0, 1], [0, vinylTurn()])}deg` }] : [],
+    };
   });
 
   // Mép kính trên ảnh bay: cùng cỡ với ảnh bay (A), bo góc = bo góc bong bóng phóng theo tỉ lệ A / cạnh bong bóng
@@ -366,14 +386,16 @@ export function PlayerTransition({ open, onClose, onClosed, onOpened, onReopen, 
   const shadowFade = useAnimatedStyle(() => ({ opacity: interpolate(p.value, [0, 0.25], [1, 0], 'clamp') }));
 
   const art = useAnimatedStyle(() => {
-    const sw = interpolate(p.value, [0, 1], [aw.value / A, 1]);
-    const r = artRadiusAt(p.value);
+    const v = vinylArt.on.value === 1;
+    const sw = artScaleAt(p.value);
+    const r = artRadiusNow(p.value);
     return {
-      opacity: artOff.value ? 0 : interpolate(p.value, [0.25, 0.6], [1, 0], 'clamp'),
+      // Đĩa than: ảnh còn hiện tới gần lúc đáp xong (nhãn thật đã hiện bên dưới từ ~0,55) rồi mới mờ đi
+      opacity: artOff.value ? 0 : v ? interpolate(p.value, [0.62, 0.95], [1, 0], 'clamp') : interpolate(p.value, [0.25, 0.6], [1, 0], 'clamp'),
       borderRadius: r / sw,
       transform: [
-        { translateX: interpolate(p.value, [0, 1], [ax.value, 0]) },
-        { translateY: interpolate(p.value, [0, 1], [ay.value, 0]) },
+        { translateX: interpolate(p.value, [0, 1], [ax.value, v ? vinylArt.x.value : 0]) },
+        { translateY: interpolate(p.value, [0, 1], [ay.value, v ? vinylArt.y.value : 0]) },
         { scale: sw },
       ],
     };

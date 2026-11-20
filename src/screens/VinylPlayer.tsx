@@ -15,7 +15,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Image as RNImage, PanResponder, Platform, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
 import Animated, {
-  cancelAnimation, Easing, interpolate, interpolateColor, useAnimatedReaction, useFrameCallback, useAnimatedStyle, useDerivedValue, useReducedMotion, useSharedValue, withRepeat, withTiming, type SharedValue,
+  cancelAnimation, Easing, interpolate, interpolateColor, useAnimatedReaction, useFrameCallback, useAnimatedStyle, useDerivedValue, useReducedMotion, useSharedValue, withRepeat, withSpring, withTiming, type SharedValue,
 } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 import { GestureDetector, GestureStateManager, usePanGesture } from 'react-native-gesture-handler';
@@ -29,7 +29,7 @@ import { useT } from '../i18n';
 import { useProgress } from '../player/PlayerProvider';
 import type { Track } from '../data/mock';
 import { SmartImage } from '../components/Cover';
-import { CloseZone, playerProgress, usePlayerTransition } from '../components/PlayerTransition';
+import { CloseZone, playerProgress, usePlayerTransition, vinylArt } from '../components/PlayerTransition';
 import { PlayPauseGlyph, SkipGlyph, useBounce } from '../components/PlayerIcons';
 import { useScreenSize } from '../components/ScreenSize';
 import { useVinylFlags } from '../debug/vinylFlags';
@@ -215,17 +215,22 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
   // Hiệu ứng lúc xoay máy: đĩa trượt vào từ bên trái, phần còn lại (nửa phải / nút) trượt nhẹ từ bên phải và hiện dần.
   // Bố cục đổi ngay khung đầu tiên sau khi xoay (iOS đã xoay cả màn hình) → chỉ cần "đặt vào chỗ" cho êm, không giật cục
   const ori = useSharedValue(1);
+  const roll = useSharedValue(0);
   useEffect(() => {
     if (firstLand.current) {
       firstLand.current = false;
       return;
     }
     if (reduced) return;
+    // Lò xo hơi nảy: đĩa lăn quá chỗ một chút rồi dội về. Nhãn (ảnh bìa) quay thêm ~nửa vòng trong lúc lăn vào
+    // (quãng lăn / bán kính) → nhìn như đĩa lăn thật chứ không chỉ trượt
     ori.value = 0;
-    ori.value = withTiming(1, { duration: 420, easing: Easing.bezier(0.23, 1, 0.32, 1) });
+    ori.value = withSpring(1, { damping: 14, stiffness: 150, mass: 0.9 });
+    roll.value = -170;
+    roll.value = withSpring(0, { damping: 16, stiffness: 120, mass: 1 });
   }, [land]); // eslint-disable-line react-hooks/exhaustive-deps
-  const discIn = useAnimatedStyle(() => ({ opacity: 0.35 + 0.65 * ori.value, transform: [{ translateX: (1 - ori.value) * -56 }] }));
-  const restIn = useAnimatedStyle(() => ({ opacity: ori.value, transform: [{ translateX: (1 - ori.value) * 36 }] }));
+  const discIn = useAnimatedStyle(() => ({ opacity: Math.min(1, 0.35 + 0.65 * ori.value), transform: [{ translateX: (1 - ori.value) * -110 }] }));
+  const restIn = useAnimatedStyle(() => ({ opacity: Math.min(1, ori.value), transform: [{ translateX: (1 - ori.value) * 40 }] }));
   // Khung lời dựng SẴN (ẩn) ngay khi player hiện ra, lời cũng được tải sẵn (NowPlayingScreen) → vuốt lên là chữ có liền,
   // không còn khoảng "đang tải" / nháy lúc khung lời mới dựng và đo các dòng
   // ...nhưng dựng SAU khi player mở xong (~0,15s sau), không dựng ngay lúc bắt đầu mở: dựng cả trăm dòng chữ đúng lúc hiệu ứng
@@ -286,6 +291,26 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
     }
   }, [spinning]); // eslint-disable-line react-hooks/exhaustive-deps
   const run = late && fg && !reduced;
+
+  // ---- Báo vị trí nhãn đĩa cho hiệu ứng mở / đóng player (PlayerTransition): ảnh bìa bay từ mini player đáp ĐÚNG vào
+  // nhãn (tròn, đúng cỡ, xoay khớp góc nhãn đang quay) thay vì thành hình vuông lớn ở đầu màn hình như player thường.
+  // Chạy trên luồng giao diện, chỉ ghi vài con số mỗi khung
+  useEffect(() => {
+    vinylArt.on.value = 1;
+    return () => {
+      vinylArt.on.value = 0;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const { cx0: vx0, cy0: vy0, cx1: vx1, cy1: vy1 } = g;
+  useAnimatedReaction(
+    () => [mix(vx0, vx1, lp.value), mix(vy0, vy1, lp.value), rot.value + roll.value],
+    ([x, y, r]) => {
+      vinylArt.x.value = x - LR;
+      vinylArt.y.value = y - LR;
+      vinylArt.d.value = LR * 2;
+      vinylArt.rot.value = r;
+    }
+  );
 
   // ---- đổi bài: đĩa cũ trượt đi rồi đĩa bài mới trượt vào (thanh thời gian đứng yên, nền + màu đổi dần cùng lúc)
   //  · đang xem đĩa: trượt chéo ra góc trên trái (khuất hẳn), đĩa mới trượt từ góc đó vào
@@ -503,7 +528,7 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
       {/* Đĩa (chỉ để nhìn, không nhận chạm) */}
       <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, discIn]}>
         {dbg.disc && <DiscUnder g={g} lp={lp} sw={sw} />}
-        {dbg.label && <VinylLabel id={disc.id} thumb={disc.thumb} color={disc.color} LR={LR} g={g} lp={lp} sw={sw} rot={rot} />}
+        {dbg.label && <VinylLabel id={disc.id} thumb={disc.thumb} color={disc.color} LR={LR} g={g} lp={lp} sw={sw} rot={rot} roll={roll} />}
         {dbg.disc && <DiscOver g={g} lp={lp} sw={sw} />}
         {/* vòng giả cắt theo bề ngang chỉ khớp với thanh nằm ngang của màn dọc */}
         {dbg.ghost && !land && <GhostArc g={g} lp={lp} sw={sw} W={W} H={H} />}
@@ -781,14 +806,14 @@ const VinylBackdrop = React.memo(function VinylBackdrop({ color, grad, run, smok
 // Nhãn giữa đĩa = ảnh bìa, xoay. Tách riêng + memo: màn player vẽ lại (vài lần mỗi giây khi đang phát) không đụng tới ảnh to này.
 // KHÔNG bọc khung cắt (overflow: hidden): lớp ~1000 điểm vừa bị cắt tròn vừa xoay thì iPhone phải vẽ lại cả lớp mỗi khung hình
 const VinylLabel = React.memo(function VinylLabel({
-  id, thumb, color, LR, g, lp, sw, rot,
-}: { id: string; thumb?: string; color?: string; LR: number; g: Geo; lp: SharedValue<number>; sw: SharedValue<number>; rot: SharedValue<number> }) {
+  id, thumb, color, LR, g, lp, sw, rot, roll,
+}: { id: string; thumb?: string; color?: string; LR: number; g: Geo; lp: SharedValue<number>; sw: SharedValue<number>; rot: SharedValue<number>; roll: SharedValue<number> }) {
   const { cx0, cy0, cx1, cy1, sdx0, sdy0, sdy1 } = g;
   const style = useAnimatedStyle(() => ({
     transform: [
       { translateX: mix(cx0, cx1, lp.value) + swapDX(sdx0, lp.value) * sw.value },
       { translateY: mix(cy0, cy1, lp.value) + swapDY(sdy0, sdy1, lp.value) * sw.value },
-      { rotate: `${rot.value}deg` },
+      { rotate: `${rot.value + roll.value}deg` },
     ],
   }));
   // đổi bài: nhãn mờ đi rồi hiện ảnh mới

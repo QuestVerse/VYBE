@@ -1,6 +1,6 @@
 import React, { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { installAppLog, log, setLogContext } from './src/data/applog';
-import { JankMonitor, useRenderProbe } from './src/components/JankMonitor';
+import { beginMotion, endMotion, JankMonitor, setPerfInfo, useRenderProbe } from './src/components/JankMonitor';
 import { updateCoverTint } from './src/theme/coverTint';
 import { LogScreen } from './src/screens/LogScreen';
 import { StatsScreen } from './src/screens/StatsScreen';
@@ -245,6 +245,23 @@ function Root() {
   useEffect(() => {
     setLogContext(tab === 'player' ? 'player' : page ? `${tab} › ${page.type}${'title' in page ? ` "${page.title}"` : 'name' in page ? ` "${page.name}"` : ''}` : tab);
   }, [tab, page]);
+  // Đổi tab trên dock (không tính mở player — đã có đo riêng): đo như một chuyển động (tab mờ dần, trượt vào)
+  const prevTab = useRef(tab);
+  useEffect(() => {
+    const from = prevTab.current;
+    prevTab.current = tab;
+    if (from === tab || tab === 'player' || from === 'player') return;
+    beginMotion('đổi tab', `${from} → ${tab}`);
+    const id = setTimeout(() => endMotion(), 600);
+    return () => clearTimeout(id);
+  }, [tab]);
+  // Thông tin kèm theo mỗi dòng "Hiệu năng" trong Nhật ký: theme, hiệu ứng nền, kính, kiểu player, hướng màn hình
+  useEffect(() => {
+    const fx = theme.background.type !== 'preset' ? `nền ${theme.background.type}` : (theme.effects.ambient as Record<string, boolean>)[theme.preset] ? 'hiệu ứng bật' : 'hiệu ứng tắt';
+    setPerfInfo(
+      `theme ${theme.preset}${theme.preset === 'smoke' ? `/${theme.effects.smokeTone}` : ''} (${fx}${ambientOff ? ', đang tạm dừng' : ''}) · kính ${theme.glass.material} · player ${theme.player.look ?? 'classic'} · ${landscape ? 'ngang' : 'dọc'}`
+    );
+  }, [theme, ambientOff, landscape]);
   const shown = tab === 'player' ? lastTab : tab; // đang mở player thì vẫn vẽ tab phía sau
   // Hàm đóng player cố định (không tạo mới mỗi lần vẽ) để màn player không phải vẽ lại theo khung app
   const lastTabRef = useRef(lastTab);

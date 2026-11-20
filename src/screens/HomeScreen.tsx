@@ -12,7 +12,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 const MaskedView = RNMaskedView as unknown as React.ComponentType<any>;
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Image, PixelRatio, Pressable, RefreshControl, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
-import Animated, { Easing, FadeOut, FadeInDown, useAnimatedScrollHandler, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import Animated, { Easing, FadeOut, FadeInDown, FadeInLeft, FadeInRight, useAnimatedScrollHandler, useAnimatedStyle, useReducedMotion, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useDockCollapse } from '../components/dockCollapse';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeProvider';
@@ -740,6 +740,22 @@ export function HomeScreen() {
   useDockCollapse(homeY);
   const offline = useOffline();
   useRenderProbe('Home', { theme, landscape, t, pad, push, offline });
+  // Xoay máy (dọc ⇄ ngang): bố cục Home đổi hẳn (một cột ⇄ hai cột) nên dựng lại từ đầu → trước đây các khối "nhảy" sang
+  // chỗ mới. Giờ ngay sau khi xoay, từng khối nảy vào chỗ của mình, lần lượt cách nhau 45ms (~0,5 giây cả màn):
+  // màn dọc trượt từ dưới lên, màn ngang cột trái trượt từ trái, cột phải từ phải. Mở app / đổi tab thì không chạy
+  const prevLand = useRef(landscape);
+  const rotatedAt = useRef(0);
+  if (prevLand.current !== landscape) {
+    prevLand.current = landscape;
+    rotatedAt.current = Date.now();
+  }
+  const reducedMotion = useReducedMotion();
+  const settling = !reducedMotion && Date.now() - rotatedAt.current < 900;
+  const enter = (i: number, from: 'up' | 'left' | 'right') => {
+    if (!settling) return undefined;
+    const base = from === 'left' ? FadeInLeft : from === 'right' ? FadeInRight : FadeInDown;
+    return base.delay(i * 45).springify().damping(15).stiffness(170).mass(0.9);
+  };
   // Offline: chỉ giữ các mục đọc được từ máy (playlist của mình, nghe gần đây), thêm "Nhạc đã tải" lên đầu
   const visible = theme.home.sections.filter((s) => !theme.home.hidden.includes(s) && (!offline || s === 'myPlaylists' || s === 'recent'));
 
@@ -770,9 +786,9 @@ export function HomeScreen() {
     }
   };
 
-  const header = (
+  const header = (from: 'up' | 'left') => (
     <>
-      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16 }}>
+      <Animated.View entering={enter(0, from)} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16 }}>
         <Text style={[styles.greeting, { color: theme.colors.text }]}>{t(greetingKey())}</Text>
         {/* Thống kê nghe nhạc */}
         <Pressable onPress={() => push({ type: 'stats' })} hitSlop={10} style={[styles.editBtn, { marginRight: 10 }]} accessibilityLabel={t('stats.title')}>
@@ -783,15 +799,15 @@ export function HomeScreen() {
             <GlassFill radius={19} solid={0.35} slab />
           <Ionicons name="options-outline" size={20} color={theme.colors.text} />
         </Pressable>
-      </View>
+      </Animated.View>
       {editing && <EditHome onClose={() => setEditing(false)} />}
     </>
   );
-  const blocks = (list: HomeSection[]) =>
+  const blocks = (list: HomeSection[], from: 'up' | 'left' | 'right', first = 1) =>
     list.map((s, i) => (
-      <View key={s} style={{ marginTop: i === 0 ? 0 : 30 }}>
+      <Animated.View key={s} entering={enter(i + first, from)} style={{ marginTop: i === 0 ? 0 : 30 }}>
         {render(s)}
-      </View>
+      </Animated.View>
     ));
 
   // Màn hình ngang: trái = lời chào + Playlist của tôi + Nghe gần đây (xếp dọc), phải = các mục còn lại. Mỗi bên cuộn riêng
@@ -804,13 +820,13 @@ export function HomeScreen() {
         ratio={0.46}
         left={
           <>
-            {header}
+            {header('left')}
             {offline && <Downloaded />}
-            {blocks(leftList)}
+            {blocks(leftList, 'left')}
             {visible.length === 0 && <Text style={{ color: theme.colors.textSecondary, fontSize: 14 }}>{t('home.allHidden')}</Text>}
           </>
         }
-        right={<View style={{ paddingTop: 4 }}>{blocks(rightList)}</View>}
+        right={<View style={{ paddingTop: 4 }}>{blocks(rightList, 'right', 0)}</View>}
       />
     );
   }
@@ -827,7 +843,7 @@ export function HomeScreen() {
         paddingRight: pad.right + PAD,
       }}
     >
-      {header}
+      {header('up')}
 
       {offline && (
         <View style={{ marginBottom: 30 }}>
@@ -835,9 +851,9 @@ export function HomeScreen() {
         </View>
       )}
       {visible.map((s, i) => (
-        <View key={s} style={{ marginTop: i === 0 ? 0 : 30 }}>
+        <Animated.View key={s} entering={enter(i + 1, 'up')} style={{ marginTop: i === 0 ? 0 : 30 }}>
           {render(s)}
-        </View>
+        </Animated.View>
       ))}
       {visible.length === 0 && (
         <Text style={{ color: theme.colors.textSecondary, fontSize: 14 }}>{t('home.allHidden')}</Text>
