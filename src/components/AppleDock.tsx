@@ -48,15 +48,15 @@ function BaseCell({ i, tw, lensX, lensOn, children }: { i: number; tw: number; l
   return <Animated.View style={st}>{children}</Animated.View>;
 }
 
-export function Cell({ id, on, labels, width, height = AM.H }: { id: Tab; on: boolean; labels: boolean; width: number; height?: number }) {
+export function Cell({ id, on, labels, width, height = AM.H, icon }: { id: Tab; on: boolean; labels: boolean; width: number; height?: number; icon?: number }) {
   const { theme } = useTheme();
   const t = useT();
   const color = on ? theme.colors.accent : theme.colors.text;
   return (
     <View style={{ width, height, alignItems: 'center', justifyContent: 'center' }}>
-      <DockGlyph id={id} size={labels ? 26 : 28} color={color} />
+      <DockGlyph id={id} size={icon ?? (labels ? 26 : 28)} color={color} />
       {labels && (
-        <Text numberOfLines={1} style={{ color, fontSize: 10, fontWeight: '600', marginTop: 2 }}>
+        <Text numberOfLines={1} style={{ color, fontSize: icon ? 11 : 10, fontWeight: '600', marginTop: 2 }}>
           {t(LABELS[id])}
         </Text>
       )}

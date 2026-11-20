@@ -24,9 +24,11 @@ import { hapticTick } from './haptics';
 type Tab = Exclude<TabId, 'player'>;
 const SNAP = { stiffness: 420, damping: 32, mass: 1 };
 const SQUISH = { stiffness: 600, damping: 28, mass: 1 };
-const COL = AM.H; // bề ngang cột dock = bề cao thanh dock lúc dọc (62)
-const PAD = 4; // khe trong viên kính quanh các ô
-const GAP = 10; // khe dock ↔ nút tìm kiếm
+// bề ngang cột dock: gần bằng dải bên phải đã chừa cho dock (DOCK_THICKNESS 80). Bản đầu 62 → nhìn nhỏ, lệch với viên mini player (ảnh 20/11)
+const COL = DOCK_THICKNESS - 4;
+const ICON = 33; // icon tab (bản đầu 28)
+const PAD = 5; // khe trong viên kính quanh các ô
+const GAP = 12; // khe dock ↔ nút tìm kiếm
 const MINI_W = 340; // bề ngang viên mini player (vừa phải, không kéo dài hết màn)
 
 export function AppleDockLand({ active, onChange, onOpenPlayer, hidden }: { active: TabId; onChange: (t: TabId) => void; onOpenPlayer: () => void; hidden: boolean }) {
@@ -44,7 +46,7 @@ export function AppleDockLand({ active, onChange, onOpenPlayer, hidden }: { acti
   const items = theme.dock.items.filter((i): i is Tab => i !== 'player');
   const tabs: Tab[] = items.filter((i) => i !== 'search');
   const hasSearch = items.includes('search');
-  const cellH = labels ? 58 : 54;
+  const cellH = labels ? 74 : 68;
   const colH = tabs.length * cellH + PAD * 2;
   const idx = tabs.indexOf(active as Tab);
 
@@ -147,7 +149,7 @@ export function AppleDockLand({ active, onChange, onOpenPlayer, hidden }: { acti
                 onChange(id);
               }}
             >
-              <Cell id={id} on={id === active} labels={labels} width={COL} height={cellH} />
+              <Cell id={id} on={id === active} labels={labels} width={COL} height={cellH} icon={labels ? ICON - 3 : ICON} />
             </Pressable>
           ))}
         </View>
@@ -167,7 +169,7 @@ export function AppleDockLand({ active, onChange, onOpenPlayer, hidden }: { acti
               {...squish(searchPress, 1.12)}
               style={[StyleSheet.absoluteFill, styles.center]}
             >
-              <DockGlyph id="search" size={27} color={active === 'search' ? theme.colors.accent : theme.colors.text} />
+              <DockGlyph id="search" size={32} color={active === 'search' ? theme.colors.accent : theme.colors.text} />
             </Pressable>
           </Animated.View>
         </Animated.View>
