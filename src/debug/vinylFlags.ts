@@ -18,6 +18,8 @@ export const VINYL_FLAGS = [
   ['lyricsFetch', 'Tải lời sẵn khi mở player'],
   // không phải phần của player: công tắc thử cách sửa kính mất hiệu ứng (tắt = quay về cách cũ gỡ / gắn lại tấm kính)
   ['glassNew', 'Kính: cách mới (đổi kiểu, không gỡ / gắn lại)'],
+  // tắt = THỬ: tab ẩn và player lúc đóng không bị display: none / đóng băng nữa mà đẩy ra ngoài màn hình (tốn hơn, chỉ để thử)
+  ['hideTabs', 'Ẩn tab / player bằng display:none + đóng băng (cách hiện tại)'],
 ] as const;
 export type VinylFlag = (typeof VINYL_FLAGS)[number][0];
 type Flags = Record<VinylFlag, boolean>;

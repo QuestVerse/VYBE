@@ -176,16 +176,22 @@ function useGlassRefresh(o: SharedValue<number>) {
 }
 
 function TabPane({ o, x, fade, visible, active, pre, name, children }: { o: SharedValue<number>; x: SharedValue<number>; fade: SharedValue<number>; visible: boolean; active: boolean; pre?: boolean; name: string; children: React.ReactNode }) {
-  const style = useAnimatedStyle(() => ({ opacity: o.value, transform: [{ translateX: x.value }] }));
+  // THỬ (công tắc "Ẩn tab / player bằng display:none" TẮT): tab ẩn KHÔNG bị display: none / đóng băng / làm mờ,
+  // chỉ đẩy ra ngoài màn hình — để biết kính + Skia mất có phải do bị ẩn không
+  const keep = !useVinylFlags().hideTabs;
+  const style = useAnimatedStyle(() => ({ opacity: keep ? 1 : o.value, transform: [{ translateX: x.value }] }));
   const epoch = useGlassRefresh(o);
   // kính trong tab chỉ bật khi tab hiện rõ VÀ không bị trang mở chồng làm mờ (tabFade)
   const vis = useDerivedValue(() => Math.min(o.value, fade.value));
   return (
-    <RAnimated.View pointerEvents={active ? 'auto' : 'none'} style={[StyleSheet.absoluteFill, { display: visible ? 'flex' : 'none' }, style]}>
+    <RAnimated.View
+      pointerEvents={active ? 'auto' : 'none'}
+      style={[StyleSheet.absoluteFill, keep ? (visible ? null : { left: 100000, right: -100000 }) : { display: visible ? 'flex' : 'none' }, style]}
+    >
       {/* Tab đang ẩn: đóng băng, không vẽ lại cho tới khi quay lại tab đó */}
       {/* pre: đang được dựng sẵn lúc rảnh → cho vẽ một lần (vẫn ẩn), xong thì đóng băng như tab ẩn khác */}
       <GlassScope vis={vis} epoch={epoch} name={`tab ${name}`}>
-        <Freeze freeze={!visible && !pre}>{children}</Freeze>
+        <Freeze freeze={!keep && !visible && !pre}>{children}</Freeze>
       </GlassScope>
     </RAnimated.View>
   );

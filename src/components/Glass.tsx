@@ -49,6 +49,8 @@ const LG: LGModule | null = (() => {
   }
 })();
 export const hasLiquidGlass = !!LG;
+// Cho màn "Thử kính" (src/debug/GlassLab.tsx) dùng thẳng tấm kính gốc, không qua GlassFill / GlassScope
+export const LiquidGlass = LG;
 
 // ---------------- Liquid Glass: khi nào được hiện ----------------
 // Tài liệu expo-glass-effect + Apple: opacity < 1 (nhất là 0) ở GlassView HOẶC BẤT KỲ VIEW CHA nào → kính không vẽ, và đưa

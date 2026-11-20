@@ -11,6 +11,7 @@ import { usePlayerPick } from '../player/PlayerProvider';
 import { SmartImage } from './Cover';
 import { ArtSlab, glassShadow as liftShadow } from './Glass';
 import { Freeze } from './Freeze';
+import { useVinylFlags } from '../debug/vinylFlags';
 import { useTheme } from '../theme/ThemeProvider';
 import { useScreenSize } from './ScreenSize';
 
@@ -348,12 +349,20 @@ export function PlayerTransition({ open, onClose, onClosed, onOpened, onReopen, 
   // Trước đây khung player (cỡ viên mini player, phủ lớp nhoè) còn nằm đè lên viên mini player vài giây → thấy viên bị nhoè
   // Chỉ áp cho kiểu viên mini player (dock Apple Music): viên thật hiện dần theo độ mở trên luồng giao diện nên không hở.
   // Bong bóng thì chỉ hiện lại khi JS báo (onClosed) → giấu sớm ở đây là hở một nhịp không có gì (bong bóng nháy)
+  // THỬ (công tắc "Ẩn tab / player bằng display:none" TẮT): player đóng thì không ẩn / không đóng băng / không mờ về 0,
+  // chỉ đẩy ra ngoài màn hình — để biết kính + thanh thời gian (Skia) mất có phải do bị ẩn / làm mờ không
+  const keep = !useVinylFlags().hideTabs;
+  const keepSV = useSharedValue(keep ? 1 : 0);
+  useEffect(() => {
+    keepSV.value = keep ? 1 : 0;
+  }, [keep]); // eslint-disable-line react-hooks/exhaustive-deps
   const rootVis = useAnimatedStyle(() => {
+    if (keepSV.value) return p.value < 0.003 ? { opacity: 1, display: 'flex' as const, transform: [{ translateX: 100000 }] } : { opacity: 1, display: 'flex' as const, transform: [{ translateX: 0 }] };
     if (playerShotHide.value && p.value < 0.003) return { opacity: 0, display: 'none' as const };
     if (fadeSV.value && sized.value) return { opacity: interpolate(p.value, [0.003, FADE_LAND], [0, 1], 'clamp'), display: 'flex' as const };
     return { opacity: (sized.value || !liveSV.value) && p.value < 0.003 ? 0 : 1, display: 'flex' as const };
   });
-  const screen = useAnimatedStyle(() => ({ opacity: interpolate(p.value, [0.22, 0.55], [0, 1], 'clamp') }));
+  const screen = useAnimatedStyle(() => ({ opacity: keepSV.value ? 1 : interpolate(p.value, [0.22, 0.55], [0, 1], 'clamp') }));
 
   // Ảnh album (vuông, ở đầu) phủ lên, mờ dần để lộ màn player (đóng lại thì hiện dần trở lại).
   // Nằm ngoài ô cửa sổ và tự co giãn đều (không bị kéo méo), bo góc đúng như ảnh ở mini player:
@@ -453,7 +462,7 @@ export function PlayerTransition({ open, onClose, onClosed, onOpened, onReopen, 
   if (!everRef.current) return null;
 
   return (
-    <Animated.View style={[StyleSheet.absoluteFill, { zIndex: 50 }, !ready && !pre && styles.gone, rootVis]} pointerEvents={open ? 'auto' : 'box-none'}>
+    <Animated.View style={[StyleSheet.absoluteFill, { zIndex: 50 }, !ready && !pre && !keep && styles.gone, rootVis]} pointerEvents={open ? 'auto' : 'box-none'}>
       {/* Không tô nền cho khung: nền của khung bị kéo méo theo hai chiều nên ở cuối hiệu ứng thu về thành hình vuông vuông
           (đó là cái ô vuông thấy được trước khi thành hình tròn). Màn player đã có nền riêng bên trong */}
       <Animated.View pointerEvents={open ? 'auto' : 'none'} style={[styles.frame, win]}>
@@ -462,7 +471,7 @@ export function PlayerTransition({ open, onClose, onClosed, onOpened, onReopen, 
             <Animated.View style={[{ width: '100%', height: '100%' }, screen]} shouldRasterizeIOS={moving} renderToHardwareTextureAndroid={moving}>
               {/* kính trong player (ô lời, nút...): chỉ bật khi player mở hẳn — lúc nở ra / thu về màn player đang mờ (screen) */}
               <GlassScope vis={p} name="player">
-                <Freeze freeze={frozen && !mounted && !warm}>{children}</Freeze>
+                <Freeze freeze={!keep && frozen && !mounted && !warm}>{children}</Freeze>
               </GlassScope>
             </Animated.View>
             {/* Nhoè chuyển động: lúc mới nở ra màn player mờ nhoè, nét dần khi gần to hẳn (đóng thì ngược lại) —
