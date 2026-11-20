@@ -828,6 +828,7 @@ export function HomeScreen() {
     const rightList = visible.filter((s) => !LEFT.includes(s));
     return (
       <SplitPane
+        noEnter
         ratio={0.46}
         left={
           <>

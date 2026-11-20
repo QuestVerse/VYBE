@@ -26,7 +26,8 @@ import { Reorderable } from '../components/Reorderable';
 import { ReorderableScrollView } from '../components/ReorderableScrollView';
 import { ProfileFeed } from '../components/ProfileFeed';
 import { StretchyBg } from '../components/Stretchy';
-import { useSharedValue } from 'react-native-reanimated';
+import Animated, { useSharedValue } from 'react-native-reanimated';
+import { useRotateEnter } from '../components/rotateEnter';
 import { useDockCollapse } from '../components/dockCollapse';
 import { useRenderProbe } from '../components/JankMonitor';
 import { GlassFill, glassShadow } from '../components/Glass';
@@ -184,6 +185,7 @@ export function LibraryScreen() {
   // Offline: tự chỉ hiện bài đã tải (không đổi lựa chọn đã lưu của nút "Đã tải")
   const offlineNow = useOffline();
   const onlyDl = useOnlyDownloaded() || offlineNow;
+  const enter = useRotateEnter();
   useRenderProbe('Thư viện', { theme, landscape, t, profile, pad, width, height, library, push, onlyDl });
   useDownloads(); // tải xong / xoá bài thì vẽ lại, danh sách lọc theo trạng thái mới
   const hasDownloads = (i: Item) => {
@@ -409,6 +411,8 @@ export function LibraryScreen() {
     return (
       <View style={{ flex: 1, flexDirection: 'row' }}>
         <ScrollView style={{ width: leftW, flexGrow: 0 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingTop: pad.top + 12, paddingBottom: pad.bottom + pad.endPadding, paddingHorizontal: H_PAD }}>
+          {/* vừa xoay sang ngang: cột trái trượt vào từ trái, cột phải từ phải (rotateEnter.ts) */}
+          <Animated.View entering={enter(0, 'left')}>
           <View style={[styles.landCard, { backgroundColor: profile.wallColor }]}>
             {profile.cover ? (
               <>
@@ -463,8 +467,9 @@ export function LibraryScreen() {
               );
             })}
           </View>
+          </Animated.View>
         </ScrollView>
-        <View style={{ flex: 1 }}>
+        <Animated.View entering={enter(1, 'right')} style={{ flex: 1 }}>
           <ReorderableScrollView bounces contentContainerStyle={{ paddingTop: pad.top + 4, paddingBottom: pad.bottom + pad.endPadding }}>
             {filter === 'profile' ? (
               <View style={{ paddingHorizontal: H_PAD, marginTop: 8 }}>
@@ -477,7 +482,7 @@ export function LibraryScreen() {
               </>
             )}
           </ReorderableScrollView>
-        </View>
+        </Animated.View>
         {overlays}
       </View>
     );
@@ -485,7 +490,8 @@ export function LibraryScreen() {
 
   return (
     <ReorderableScrollView bounces scrollYOut={scrollY} contentContainerStyle={{ paddingBottom: pad.bottom + pad.endPadding }}>
-      <View style={{ width: '100%' }}>
+      {/* vừa xoay về dọc: trượt từ dưới lên vào chỗ (rotateEnter.ts) */}
+      <Animated.View entering={enter(0, 'up')} style={{ width: '100%' }}>
         {/* Ảnh bìa (wall) của profile: ảnh người dùng chọn, mờ dần xuống màu nền. Chưa có ảnh thì là dải màu như cũ */}
         {profile.cover ? (
           <View style={{ position: 'absolute', top: 0, left: 0, right: 0, height: COVER_H }}>
@@ -594,7 +600,7 @@ export function LibraryScreen() {
         </View>
         </>
         )}
-      </View>
+      </Animated.View>
       {overlays}
     </ReorderableScrollView>
   );

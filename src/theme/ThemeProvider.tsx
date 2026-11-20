@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { noteOrientation } from '../components/rotateEnter';
 import { Appearance, useColorScheme, View } from 'react-native';
 import { useScreenSize } from '../components/ScreenSize';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -199,6 +200,7 @@ function orient(t: Theme, landscape: boolean): Theme {
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const screen = useScreenSize();
   const landscape = screen.width > screen.height;
+  noteOrientation(landscape); // ghi lúc vừa xoay → các màn trượt vào chỗ (rotateEnter.ts)
   // Người dùng mới (theo hệ thống): mở app lên đã đúng sáng/tối của điện thoại
   const [theme, setThemeState] = useState<Theme>(() => derive({ ...defaultTheme, preset: systemPreset(Appearance.getColorScheme()) }));
   const [ready, setReady] = useState(false);

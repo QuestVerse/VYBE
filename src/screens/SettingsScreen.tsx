@@ -2,6 +2,8 @@ import { SplitPane } from '../components/SplitPane';
 import { syncProfile, useProfile, useProfileSyncError } from '../data/profile';
 import React from 'react';
 import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import Animated from 'react-native-reanimated';
+import { useRotateEnter } from '../components/rotateEnter';
 import { useTheme } from '../theme/ThemeProvider';
 import { useContentInsets } from '../components/FloatingDock';
 import { LANGUAGES, useT } from '../i18n';
@@ -44,6 +46,7 @@ export function SettingsScreen() {
   const profile = useProfile();
   const syncErr = useProfileSyncError();
   const crossfade = useCrossfade();
+  const enter = useRotateEnter();
   useRenderProbe('Cài đặt', { theme, landscape, t, push, pad, session, profile, syncErr, crossfade });
   // Thẻ trong Cài đặt là tấm kính giống dock (cùng kiểu với ô playlist ở Home)
   const gs = glassShadow(0.8, theme.colors.glassTint !== 'dark');
@@ -229,9 +232,12 @@ export function SettingsScreen() {
         paddingRight: pad.right + 16,
       }}
     >
-      {settingsPart}
-      {accountPart}
-      {extraPart}
+      {/* vừa xoay về dọc: trượt từ dưới lên vào chỗ (rotateEnter.ts) */}
+      <Animated.View entering={enter(0, 'up')}>
+        {settingsPart}
+        {accountPart}
+        {extraPart}
+      </Animated.View>
     </ScrollView>
   );
 }

@@ -1,4 +1,5 @@
 import { SplitPane } from '../components/SplitPane';
+import { useRotateEnter } from '../components/rotateEnter';
 import { onSearchFocusRequest } from './searchFocus';
 import { useRenderProbe } from '../components/JankMonitor';
 import { ScalePressable } from '../components/PressScale';
@@ -134,6 +135,7 @@ export function SearchScreen() {
   });
   useDockCollapse(searchY);
   const { theme, landscape } = useTheme();
+  const rotEnter = useRotateEnter();
   useEffect(() => {
     const id = setTimeout(warmUp, 250); // để màn hình Tìm kiếm hiện ra trước rồi mới làm
     return () => clearTimeout(id);
@@ -746,7 +748,8 @@ export function SearchScreen() {
       keyboardDismissMode="on-drag"
       contentContainerStyle={{ paddingBottom: pad.bottom + pad.endPadding }}
     >
-      <View style={{ width: '100%', paddingHorizontal: H_PAD }}>
+      {/* vừa xoay về dọc: trượt từ dưới lên vào chỗ (rotateEnter.ts) */}
+      <RAnimated.View entering={rotEnter(0, 'up')} style={{ width: '100%', paddingHorizontal: H_PAD }}>
         <Text style={{ color: text, fontSize: 26, fontWeight: '700', marginTop: pad.top + 16 }}>{tr('search.title')}</Text>
 
         {searchBox}
@@ -776,7 +779,7 @@ export function SearchScreen() {
           </View>
         )}
         </Pressable>
-      </View>
+      </RAnimated.View>
     </RAnimated.ScrollView>
   );
 }
