@@ -41,8 +41,9 @@ import { NavProvider, Page, useNav, useNavStack } from './src/nav/Nav';
 import { CollectionScreen } from './src/screens/CollectionScreen';
 import { ArtistScreen } from './src/screens/ArtistScreen';
 import { FadeLayer, SwipeBack } from './src/nav/SwipeBack';
-import RAnimated, { cancelAnimation, Easing as REasing, makeMutable, SharedValue, useAnimatedReaction, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
-import { GlassEpoch, GlassFade, glassRebuildReason } from './src/components/Glass';
+import RAnimated, { cancelAnimation, Easing as REasing, makeMutable, SharedValue, useAnimatedReaction, useAnimatedStyle, useDerivedValue, useSharedValue, withTiming } from 'react-native-reanimated';
+import { GlassScope, glassRebuildReason } from './src/components/Glass';
+import { useVinylFlags } from './src/debug/vinylFlags';
 import { scheduleOnRN } from 'react-native-worklets';
 import { AppBackground } from './src/components/AppBackground';
 import { AmbientEffect } from './src/components/AmbientLayer';
@@ -103,7 +104,12 @@ function useGlassRefresh(o: SharedValue<number>) {
   // Tab vừa hiện rõ hẳn (mờ dần xong): tăng "lần hiện" → các tấm Liquid Glass trong tab dựng lại ở độ mờ 100% (xem GlassEpoch)
   const [epoch, setEpoch] = useState(0);
   const bump = useCallback(() => setEpoch((e) => e + 1), []);
+  // Cách mới: vùng hiện rõ thì GlassScope tự bật kính, không cần "bật lại". Cách cũ: dựng lại tấm kính
+  const newWay = useVinylFlags().glassNew;
+  const newRef = useRef(newWay);
+  newRef.current = newWay;
   const bumpShown = useCallback(() => {
+    if (newRef.current) return;
     glassRebuildReason('tab hiện rõ');
     bump();
   }, [bump]);
@@ -169,33 +175,36 @@ function useGlassRefresh(o: SharedValue<number>) {
   return epoch;
 }
 
-function TabPane({ o, x, visible, active, pre, children }: { o: SharedValue<number>; x: SharedValue<number>; visible: boolean; active: boolean; pre?: boolean; children: React.ReactNode }) {
+function TabPane({ o, x, fade, visible, active, pre, name, children }: { o: SharedValue<number>; x: SharedValue<number>; fade: SharedValue<number>; visible: boolean; active: boolean; pre?: boolean; name: string; children: React.ReactNode }) {
   const style = useAnimatedStyle(() => ({ opacity: o.value, transform: [{ translateX: x.value }] }));
   const epoch = useGlassRefresh(o);
+  // kính trong tab chỉ bật khi tab hiện rõ VÀ không bị trang mở chồng làm mờ (tabFade)
+  const vis = useDerivedValue(() => Math.min(o.value, fade.value));
   return (
     <RAnimated.View pointerEvents={active ? 'auto' : 'none'} style={[StyleSheet.absoluteFill, { display: visible ? 'flex' : 'none' }, style]}>
       {/* Tab đang ẩn: đóng băng, không vẽ lại cho tới khi quay lại tab đó */}
       {/* pre: đang được dựng sẵn lúc rảnh → cho vẽ một lần (vẫn ẩn), xong thì đóng băng như tab ẩn khác */}
-      <GlassFade.Provider value={o}>
-      <GlassEpoch.Provider value={epoch}>
+      <GlassScope vis={vis} epoch={epoch} name={`tab ${name}`}>
         <Freeze freeze={!visible && !pre}>{children}</Freeze>
-      </GlassEpoch.Provider>
-      </GlassFade.Provider>
+      </GlassScope>
     </RAnimated.View>
   );
 }
 
 // Trang mở chồng (playlist, album... — vd. các ô lời trong Thư viện hay mất kính): dựng lại kính y như tab
-function PageGlass({ o, children }: { o: SharedValue<number>; children: React.ReactNode }) {
+function PageGlass({ o, name, children }: { o: SharedValue<number>; name: string; children: React.ReactNode }) {
   const epoch = useGlassRefresh(o);
   return (
-    <GlassFade.Provider value={o}>
-      <GlassEpoch.Provider value={epoch}>{children}</GlassEpoch.Provider>
-    </GlassFade.Provider>
+    <GlassScope vis={o} epoch={epoch} name={`trang ${name}`}>
+      {children}
+    </GlassScope>
   );
 }
 
-function TabStage({ shown, render, pre }: { shown: PageTab; render: (id: PageTab) => React.ReactNode; pre?: PageTab | null }) {
+function TabStage({ shown, render, pre, fade }: { shown: PageTab; render: (id: PageTab) => React.ReactNode; pre?: PageTab | null; fade: SharedValue<number> }) {
+  const newWay = useVinylFlags().glassNew;
+  const newRef = useRef(newWay);
+  newRef.current = newWay;
   const sv = {
     home: { o: useSharedValue(shown === 'home' ? 1 : 0), x: useSharedValue(0) },
     search: { o: useSharedValue(shown === 'search' ? 1 : 0), x: useSharedValue(0) },
@@ -224,6 +233,23 @@ function TabStage({ shown, render, pre }: { shown: PageTab; render: (id: PageTab
     const dir = Math.sign(TAB_ORDER.indexOf(shown) - TAB_ORDER.indexOf(from)) || 1;
     // Tab mới: đang ẩn hẳn thì đặt ở bên phía nó đi vào; đang mờ dở thì chạy tiếp từ chỗ đó
     const t = sv[shown];
+    if (newRef.current) {
+      // Cách mới (sửa kính mất): KHÔNG làm mờ tab — Liquid Glass không vẽ nếu khung cha từng mờ. Tab cũ ẩn ngay,
+      // tab mới hiện rõ ngay và chỉ trượt nhẹ 30px vào chỗ
+      cancelAnimation(t.o);
+      t.o.value = 1;
+      t.x.value = dir * TAB_SHIFT;
+      t.x.value = withTiming(0, TAB_IN);
+      for (const id of TAB_ORDER) {
+        if (id === shown) continue;
+        cancelAnimation(sv[id].o);
+        cancelAnimation(sv[id].x);
+        sv[id].o.value = 0;
+        sv[id].x.value = 0;
+      }
+      setVisible(new Set([shown]));
+      return;
+    }
     if (t.o.value < 0.01) t.x.value = dir * TAB_SHIFT;
     t.o.value = withTiming(1, TAB_IN);
     t.x.value = withTiming(0, TAB_IN);
@@ -250,7 +276,7 @@ function TabStage({ shown, render, pre }: { shown: PageTab; render: (id: PageTab
         const el = render(id);
         if (!el) return null;
         return (
-          <TabPane key={id} o={sv[id].o} x={sv[id].x} visible={visible.has(id)} active={id === shown} pre={pre === id}>
+          <TabPane key={id} o={sv[id].o} x={sv[id].x} fade={fade} name={id} visible={visible.has(id)} active={id === shown} pre={pre === id}>
             {el}
           </TabPane>
         );
@@ -408,7 +434,7 @@ function Root() {
         {/* Tab hiện tại. Có trang mở chồng thì tab mờ dần đi theo vị trí trang (vuốt quay lại thì hiện lại dần),
             để trang trong suốt phía trên chỉ thấy nền chung, không thấy chữ của tab chồng lên */}
         <FadeLayer value={tabFade} pointerEvents={page ? 'none' : 'auto'} style={{ flex: 1 }}>
-          <TabStage shown={shown as PageTab} render={tabEl} pre={preTab} />
+          <TabStage shown={shown as PageTab} render={tabEl} pre={preTab} fade={tabFade} />
         </FadeLayer>
         {/* Các trang mở chồng lên tab (playlist, album, nghệ sĩ, thể loại...). Dock và mini player vẫn nằm trên.
             Mọi trang trong chồng đều được giữ lại (không dựng lại khi quay về), nhưng chỉ trang trên cùng hiện rõ:
@@ -420,7 +446,7 @@ function Root() {
           return (
             <FadeLayer key={k} value={fadeOf(k)} pointerEvents={top ? 'box-none' : 'none'} style={StyleSheet.absoluteFill}>
               {/* Trang nằm sâu hơn trang ngay dưới trang trên cùng thì không nhìn thấy được: đóng băng */}
-              <PageGlass o={fadeOf(k)}>
+              <PageGlass o={fadeOf(k)} name={pg.type}>
               <Freeze freeze={i < nav.stack.length - 2}>
               <SwipeBack onBack={nav.pop} fade={i === 0 ? tabFade : fadeOf(pageKey(nav.stack[i - 1], i - 1))}>
                 {pg.type === 'collection' ? (

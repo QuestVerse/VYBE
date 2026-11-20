@@ -1,3 +1,4 @@
+import { GlassScope } from './Glass';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Image, Platform, StyleSheet, View } from 'react-native';
 import { GestureDetector, usePanGesture } from 'react-native-gesture-handler';
@@ -459,7 +460,10 @@ export function PlayerTransition({ open, onClose, onClosed, onOpened, onReopen, 
         <Animated.View style={[styles.innerFrame, inner]}>
           <TransitionContext.Provider value={ctx}>
             <Animated.View style={[{ width: '100%', height: '100%' }, screen]} shouldRasterizeIOS={moving} renderToHardwareTextureAndroid={moving}>
-              <Freeze freeze={frozen && !mounted && !warm}>{children}</Freeze>
+              {/* kính trong player (ô lời, nút...): chỉ bật khi player mở hẳn — lúc nở ra / thu về màn player đang mờ (screen) */}
+              <GlassScope vis={p} name="player">
+                <Freeze freeze={frozen && !mounted && !warm}>{children}</Freeze>
+              </GlassScope>
             </Animated.View>
             {/* Nhoè chuyển động: lúc mới nở ra màn player mờ nhoè, nét dần khi gần to hẳn (đóng thì ngược lại) —
                 mắt thấy chuyển động liền mạch hơn, che luôn những khung hình chưa kịp vẽ */}
