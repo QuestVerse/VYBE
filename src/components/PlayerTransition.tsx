@@ -293,6 +293,10 @@ export function PlayerTransition({ open, onClose, onClosed, onOpened, onReopen, 
   //    hình chữ nhật cần cắt
   //  - bên trong co ngược chiều dọc lại (sw / sh) để màn player được thu nhỏ đều, không bị méo
   const win = useAnimatedStyle(() => {
+    // Mở hẳn: khung = 100% màn hình, không phải số W×H lấy từ JS. Lúc xoay máy, iOS đổi cỡ màn hình ngay nhưng W×H trong JS
+    // phải chờ một lượt vẽ lại (~100–200ms) → trước đây khung player vẫn là khung DỌC cũ trong màn NGANG: nửa trên xoay trước,
+    // nửa dưới lộ dock + nền Home, rồi giật một cái mới đủ player ngang (Tyson 20/11 13:22)
+    if (p.value >= 0.999) return { width: '100%', height: '100%', borderRadius: 0, transform: [{ translateX: 0 }, { translateY: 0 }, { scaleX: 1 }, { scaleY: 1 }] };
     const sw = interpolate(p.value, [0, 1], [ow.value / W, 1]);
     const sh = interpolate(p.value, [0, 1], [oh.value / H, 1]);
     // Bo góc mong muốn (theo điểm ảnh thật), đổi ra đơn vị của khung trước khi co
@@ -331,11 +335,12 @@ export function PlayerTransition({ open, onClose, onClosed, onOpened, onReopen, 
   //  - màn ngang: k = sh → player vừa khít chiều cao, thừa bên phải bị cắt. Trước đây vẫn lấy sw nên player nhỏ hơn ô,
   //    dưới đáy ô trống trơn, ảnh bìa bay lại to hơn player → thò ra dưới thành một khối lệch, nhìn rất sượng
   const inner = useAnimatedStyle(() => {
+    if (p.value >= 0.999) return { width: '100%', height: '100%', transform: [{ scaleX: 1 }, { scaleY: 1 }] };
     const sw = interpolate(p.value, [0, 1], [ow.value / W, 1]);
     const sh = interpolate(p.value, [0, 1], [oh.value / H, 1]);
     const k = Math.max(sw, sh);
-    if (sized.value) return { transform: [{ scaleX: k }, { scaleY: k }] };
-    return { transform: [{ scaleX: k / sw }, { scaleY: k / sh }] };
+    if (sized.value) return { width: W, height: H, transform: [{ scaleX: k }, { scaleY: k }] };
+    return { width: W, height: H, transform: [{ scaleX: k / sw }, { scaleY: k / sh }] };
   });
   const veil = useAnimatedStyle(() => ({ opacity: interpolate(p.value, [0, 0.04, 0.3, 0.92], [0, 1, 1, 0], 'clamp') }));
   // Thu về hẳn (độ mở ~0): giấu toàn bộ lớp chuyển cảnh ngay trên luồng giao diện, không đợi JS gỡ ra.
@@ -450,10 +455,10 @@ export function PlayerTransition({ open, onClose, onClosed, onOpened, onReopen, 
     <Animated.View style={[StyleSheet.absoluteFill, { zIndex: 50 }, !ready && !pre && styles.gone, rootVis]} pointerEvents={open ? 'auto' : 'box-none'}>
       {/* Không tô nền cho khung: nền của khung bị kéo méo theo hai chiều nên ở cuối hiệu ứng thu về thành hình vuông vuông
           (đó là cái ô vuông thấy được trước khi thành hình tròn). Màn player đã có nền riêng bên trong */}
-      <Animated.View pointerEvents={open ? 'auto' : 'none'} style={[styles.frame, { width: W, height: H }, win]}>
-        <Animated.View style={[styles.innerFrame, { width: W, height: H }, inner]}>
+      <Animated.View pointerEvents={open ? 'auto' : 'none'} style={[styles.frame, win]}>
+        <Animated.View style={[styles.innerFrame, inner]}>
           <TransitionContext.Provider value={ctx}>
-            <Animated.View style={[{ width: W, height: H }, screen]} shouldRasterizeIOS={moving} renderToHardwareTextureAndroid={moving}>
+            <Animated.View style={[{ width: '100%', height: '100%' }, screen]} shouldRasterizeIOS={moving} renderToHardwareTextureAndroid={moving}>
               <Freeze freeze={frozen && !mounted && !warm}>{children}</Freeze>
             </Animated.View>
             {/* Nhoè chuyển động: lúc mới nở ra màn player mờ nhoè, nét dần khi gần to hẳn (đóng thì ngược lại) —

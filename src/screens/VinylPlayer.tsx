@@ -15,7 +15,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Image as RNImage, PanResponder, Platform, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
 import Animated, {
-  cancelAnimation, Easing, interpolate, interpolateColor, useAnimatedReaction, useFrameCallback, useAnimatedStyle, useDerivedValue, useReducedMotion, useSharedValue, withRepeat, withSpring, withTiming, type SharedValue,
+  cancelAnimation, Easing, makeMutable, withDelay, interpolate, interpolateColor, useAnimatedReaction, useFrameCallback, useAnimatedStyle, useDerivedValue, useReducedMotion, useSharedValue, withRepeat, withSpring, withTiming, type SharedValue,
 } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 import { GestureDetector, GestureStateManager, usePanGesture } from 'react-native-gesture-handler';
@@ -54,12 +54,10 @@ function getTimeFont() {
 }
 
 // (các hàm dùng trong worklet phải khai báo TRƯỚC worklet dùng chúng)
-// Mở player: đĩa lăn từ mép trái vào góc của nó (thay cho ảnh bìa bay). e = 0 lúc player vừa bắt đầu nở, 1 lúc mở hẳn
-const openEase = (pv: number) => {
-  'worklet';
-  const t = Math.min(1, Math.max(0, (pv - 0.15) / 0.85));
-  return 1 - (1 - t) * (1 - t) * (1 - t);
-};
+// Mở player: đĩa lăn từ mép trái vào góc của nó (thay cho ảnh bìa bay). 0 = còn ngoài mép trái, 1 = đã vào chỗ.
+// Chạy RIÊNG bằng lò xo (~0,7s), bắt đầu ngay khi player bắt đầu mở — bản trước bám theo độ mở của player nên phần lớn
+// quãng lăn rơi vào lúc màn player còn nhỏ / còn mờ → gần như không thấy (Tyson 20/11)
+const discOpen = makeMutable(1);
 const mix = (a: number, b: number, k: number) => {
   'worklet';
   return a + (b - a) * k;
@@ -224,9 +222,21 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
   }, [land]); // eslint-disable-line react-hooks/exhaustive-deps
   // + lúc mở / đóng player: cả đĩa (và thanh thời gian bám theo đĩa) trượt từ ngoài mép trái vào góc
   const discIn = useAnimatedStyle(() => {
-    const e = reduced ? 1 : openEase(playerProgress.value);
+    const e = discOpen.value;
     return { opacity: Math.min(1, 0.35 + 0.65 * ori.value), transform: [{ translateX: (1 - ori.value) * -110 - (1 - e) * W * 0.6 }] };
   });
+  useAnimatedReaction(
+    () => playerProgress.value > 0.04,
+    (up, was) => {
+      if (!up || was !== false) return;
+      if (reduced) {
+        discOpen.value = 1;
+        return;
+      }
+      discOpen.value = 0;
+      discOpen.value = withDelay(60, withSpring(1, { damping: 18, stiffness: 110, mass: 1 }));
+    }
+  );
   const restIn = useAnimatedStyle(() => ({ opacity: Math.min(1, ori.value), transform: [{ translateX: (1 - ori.value) * 40 }] }));
   // Khung lời dựng SẴN (ẩn) ngay khi player hiện ra, lời cũng được tải sẵn (NowPlayingScreen) → vuốt lên là chữ có liền,
   // không còn khoảng "đang tải" / nháy lúc khung lời mới dựng và đo các dòng
@@ -834,7 +844,7 @@ const VinylLabel = React.memo(function VinylLabel({
       { translateX: mix(cx0, cx1, lp.value) + swapDX(sdx0, lp.value) * sw.value },
       { translateY: mix(cy0, cy1, lp.value) + swapDY(sdy0, sdy1, lp.value) * sw.value },
       // lăn vào lúc mở player: nhãn quay ngược thêm ~200° rồi về đúng góc → nhìn như đĩa lăn chứ không chỉ trượt
-      { rotate: `${rot.value + roll.value - 200 * (1 - openEase(playerProgress.value))}deg` },
+      { rotate: `${rot.value + roll.value - 240 * (1 - discOpen.value)}deg` },
     ],
   }));
   // đổi bài: nhãn mờ đi rồi hiện ảnh mới
