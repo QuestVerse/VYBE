@@ -90,7 +90,10 @@ export async function coverGradient(url: string): Promise<CoverGradient | null> 
     const S = require('@shopify/react-native-skia') as typeof import('@shopify/react-native-skia');
     const data = await S.Skia.Data.fromURI(url);
     const img = S.Skia.Image.MakeImageFromEncoded(data);
-    if (!img) return null;
+    if (!img) {
+      log('ui', `nền gradient ảnh bìa: KHÔNG đọc được ảnh (${Date.now() - t0}ms)`);
+      return null;
+    }
     const N = 16;
     const surf = S.Skia.Surface.Make(N, N);
     if (!surf) return null;
@@ -106,28 +109,40 @@ export async function coverGradient(url: string): Promise<CoverGradient | null> 
     log('ui', `nền gradient ảnh bìa: ${cols.length} màu (${Date.now() - t0}ms)`);
     return g;
   } catch (e) {
-    console.warn('[coverGradient]', e);
+    // trước đây lỗi (mất mạng, ảnh hỏng) chỉ in ra console → nền khói giữ nguyên màu bài TRƯỚC mà log không thấy gì (Tyson 21/11)
+    log('ui', `nền gradient ảnh bìa: lỗi ${String((e as Error)?.message ?? e).slice(0, 80)} (${Date.now() - t0}ms)`);
     return null;
   }
 }
 
-// Gradient của ảnh bìa url (null trong lúc đang tính lần đầu; đổi bài thì giữ gradient cũ tới khi có cái mới)
+// Gradient của ảnh bìa url (null trong lúc đang tính lần đầu; đổi bài thì giữ gradient cũ tới khi có cái mới).
+// Tính hỏng (mất mạng, ảnh lỗi) → trả null để nơi dùng chuyển sang màu dự phòng của bài MỚI (trước đây giữ luôn màu bài cũ:
+// Tyson 21/11 "nền khói không đổi màu theo ảnh album mà giữ màu album trước"), rồi thử lại 1 lần sau 4 giây
 export function useCoverGradient(url: string | undefined | null) {
   const [g, setG] = useState<CoverGradient | null>(() => (url ? cache.get(url) ?? null : null));
   useEffect(() => {
-    if (!url) return;
+    if (!url) {
+      setG(null);
+      return;
+    }
     const hit = cache.get(url);
     if (hit) {
       setG(hit);
       return;
     }
     let alive = true;
-    const id = setTimeout(() => {
-      coverGradient(url).then((r) => alive && r && setG(r));
-    }, 60);
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const run = (again: boolean) =>
+      coverGradient(url).then((r) => {
+        if (!alive) return;
+        setG(r);
+        if (!r && again) retry = setTimeout(() => run(false), 4000);
+      });
+    const id = setTimeout(() => run(true), 60);
     return () => {
       alive = false;
       clearTimeout(id);
+      if (retry) clearTimeout(retry);
     };
   }, [url]);
   return g;

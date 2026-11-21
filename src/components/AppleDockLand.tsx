@@ -4,6 +4,7 @@
 //  - mini player dạng viên thuốc cỡ vừa nằm chính giữa phía dưới màn hình; chạm = player nở ra từ chính viên đó
 //  - mở player: dock + nút tìm kiếm trượt ra mép phải, viên mini player mờ đi (giống bản dọc)
 // Không có kính lúp và không thu nhỏ khi cuộn như bản dọc
+// Dock ZYX lúc ngang dùng chung bố cục này (Tyson 21/11), chỉ đổi sang góc bo vuông vức của ZYX (`square`)
 import React, { useEffect, useRef } from 'react';
 import { Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import Animated, { interpolate, useAnimatedStyle, useReducedMotion, useSharedValue, withSpring } from 'react-native-reanimated';
@@ -20,6 +21,7 @@ import { playerOrigin, playerProgress, prewarmPlayer } from './PlayerTransition'
 import { AM, amBottom, Cell } from './AppleDock';
 import { DOCK_THICKNESS } from './layout';
 import { hapticTick } from './haptics';
+import { ZX } from './ZyxDock';
 
 type Tab = Exclude<TabId, 'player'>;
 const SNAP = { stiffness: 420, damping: 32, mass: 1 };
@@ -31,7 +33,7 @@ const PAD = 5; // khe trong viên kính quanh các ô
 const GAP = 12; // khe dock ↔ nút tìm kiếm
 const MINI_W = 340; // bề ngang viên mini player (vừa phải, không kéo dài hết màn)
 
-export function AppleDockLand({ active, onChange, onOpenPlayer, hidden }: { active: TabId; onChange: (t: TabId) => void; onOpenPlayer: () => void; hidden: boolean }) {
+export function AppleDockLand({ active, onChange, onOpenPlayer, hidden, square }: { active: TabId; onChange: (t: TabId) => void; onOpenPlayer: () => void; hidden: boolean; square?: boolean }) {
   const { theme } = useTheme();
   const light = theme.colors.glassTint !== 'dark';
   const noRim = theme.dock.rimLight === false;
@@ -93,6 +95,10 @@ export function AppleDockLand({ active, onChange, onOpenPlayer, hidden }: { acti
     });
   };
   const miniW = Math.min(MINI_W, W * 0.42);
+  // góc bo: Apple = viên thuốc / tròn; ZYX = góc vuông vức (ZX.R của dock ZYX dọc)
+  const colR = square ? ZX.R : COL / 2;
+  const miniR = square ? ZX.R - 6 : AM.MH / 2;
+  const pillR = square ? ZX.R - PAD : 999;
 
   return (
     <View pointerEvents={hidden ? 'none' : 'box-none'} style={StyleSheet.absoluteFill}>
@@ -100,9 +106,9 @@ export function AppleDockLand({ active, onChange, onOpenPlayer, hidden }: { acti
       {track && (
         <Animated.View
           ref={pillRef}
-          style={[styles.abs, { left: (W - miniW) / 2, bottom, width: miniW, height: AM.MH, borderRadius: AM.MH / 2, borderCurve: 'continuous' }, glassShadow(1, light), miniStyle, miniOut]}
+          style={[styles.abs, { left: (W - miniW) / 2, bottom, width: miniW, height: AM.MH, borderRadius: miniR, borderCurve: 'continuous' }, glassShadow(1, light), miniStyle, miniOut]}
         >
-          <GlassFill radius={AM.MH / 2} solid={0.5} slab noRim={noRim} />
+          <GlassFill radius={miniR} solid={0.5} slab noRim={noRim} />
           <Pressable testID="mini-pill" onPress={openFromMini} {...squish(miniPress, 1.03, prewarmPlayer)} style={styles.miniRow}>
             <View ref={artRef} collapsable={false} style={[styles.miniArt, { backgroundColor: track.color }]}>
               {track.thumb ? <SmartImage url={track.thumb} size={96} style={StyleSheet.absoluteFill} /> : null}
@@ -129,15 +135,15 @@ export function AppleDockLand({ active, onChange, onOpenPlayer, hidden }: { acti
       <Animated.View
         style={[
           styles.abs,
-          { right, bottom: bottom + (hasSearch ? COL + GAP : 0), width: COL, height: colH, borderRadius: COL / 2, borderCurve: 'continuous' },
+          { right, bottom: bottom + (hasSearch ? COL + GAP : 0), width: COL, height: colH, borderRadius: colR, borderCurve: 'continuous' },
           glassShadow(1, light),
           barsOut,
         ]}
       >
-        <GlassFill radius={COL / 2} solid={0.5} slab noRim={noRim} />
+        <GlassFill radius={colR} solid={0.5} slab noRim={noRim} />
         <Animated.View
           pointerEvents="none"
-          style={[styles.abs, { left: PAD, top: PAD, width: COL - PAD * 2, height: cellH, borderRadius: 999, backgroundColor: light ? 'rgba(0,0,0,0.065)' : 'rgba(255,255,255,0.12)' }, pillStyle]}
+          style={[styles.abs, { left: PAD, top: PAD, width: COL - PAD * 2, height: cellH, borderRadius: pillR, borderCurve: 'continuous', backgroundColor: light ? 'rgba(0,0,0,0.065)' : 'rgba(255,255,255,0.12)' }, pillStyle]}
         />
         <View style={{ paddingVertical: PAD }}>
           {tabs.map((id) => (
@@ -157,9 +163,9 @@ export function AppleDockLand({ active, onChange, onOpenPlayer, hidden }: { acti
 
       {/* nút tìm kiếm tròn: góc dưới bên phải */}
       {hasSearch && (
-        <Animated.View style={[styles.abs, { right, bottom, width: COL, height: COL, borderRadius: COL / 2 }, glassShadow(1, light), barsOut]}>
+        <Animated.View style={[styles.abs, { right, bottom, width: COL, height: COL, borderRadius: colR, borderCurve: 'continuous' }, glassShadow(1, light), barsOut]}>
           <Animated.View style={[StyleSheet.absoluteFill, searchStyle]}>
-            <GlassFill radius={COL / 2} solid={0.5} slab noRim={noRim} />
+            <GlassFill radius={colR} solid={0.5} slab noRim={noRim} />
             <Pressable
               testID="dock-search"
               onPress={() => {

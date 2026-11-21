@@ -15,11 +15,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Image as RNImage, PanResponder, Platform, Pressable, StatusBar, StyleSheet, Text, View } from 'react-native';
 import Animated, {
-  cancelAnimation, Easing, makeMutable, withDelay, interpolate, interpolateColor, useAnimatedReaction, useFrameCallback, useAnimatedStyle, useDerivedValue, useReducedMotion, useSharedValue, withRepeat, withSpring, withTiming, type SharedValue,
+  cancelAnimation, Easing, makeMutable, withDelay, interpolate, interpolateColor, useAnimatedProps, useAnimatedReaction, useFrameCallback, useAnimatedStyle, useDerivedValue, useReducedMotion, useSharedValue, withRepeat, withSpring, withTiming, type SharedValue,
 } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 import { GestureDetector, GestureStateManager, usePanGesture } from 'react-native-gesture-handler';
-import { Canvas, Circle, Fill, Group, Path, RadialGradient, Shader, Skia, SweepGradient, TextPath, matchFont, vec, type SkFont } from '@shopify/react-native-skia';
+import { Canvas, Fill, Shader } from '@shopify/react-native-skia';
+import Svg, { Circle as SvgCircle, Path as SvgPath } from 'react-native-svg';
 import { smokeShader } from '../theme/effects/smoke';
 import { discImage, discImageCached, discPad } from '../theme/effects/discImage';
 import { markRender } from '../components/JankMonitor';
@@ -47,26 +48,37 @@ const SEEK_GLIDE = { duration: 260, easing: Easing.bezier(0.23, 1, 0.32, 1) };
 
 const fmt = (s: number) => `${Math.floor(Math.max(0, s) / 60)}:${String(Math.floor(Math.max(0, s) % 60)).padStart(2, '0')}`;
 
-let timeFont: SkFont | null = null;
-function getTimeFont() {
-  if (!timeFont) timeFont = matchFont({ fontFamily: Platform.select({ ios: 'Helvetica Neue', default: 'sans-serif' }), fontSize: 12, fontWeight: '600' });
-  return timeFont;
-}
-
 // (các hàm dùng trong worklet phải khai báo TRƯỚC worklet dùng chúng)
 // Mở player: đĩa lăn từ mép trái vào góc của nó (thay cho ảnh bìa bay). 0 = còn ngoài mép trái, 1 = đã vào chỗ.
 // Chạy RIÊNG bằng lò xo (~0,7s), bắt đầu ngay khi player bắt đầu mở — bản trước bám theo độ mở của player nên phần lớn
 // quãng lăn rơi vào lúc màn player còn nhỏ / còn mờ → gần như không thấy (Tyson 20/11)
 const discOpen = makeMutable(1);
+const AnimatedSvgPath = Animated.createAnimatedComponent(SvgPath);
+const AnimatedSvgCircle = Animated.createAnimatedComponent(SvgCircle);
 const mix = (a: number, b: number, k: number) => {
   'worklet';
   return a + (b - a) * k;
 };
-const arcPath = (cx: number, cy: number, rr: number, b0: number, b1: number) => {
+// Thanh thời gian (SVG): cung tròn tâm (cx, cy) từ góc s0 tới góc s1 (radian, toạ độ màn hình y hướng xuống).
+// Góc giảm dần (s1 < s0) = đi ngược chiều kim đồng hồ trên màn hình → cờ sweep 0
+const svgArc = (cx: number, cy: number, rr: number, s0: number, s1: number) => {
   'worklet';
-  const b = Skia.PathBuilder.Make();
-  b.addArc({ x: cx - rr, y: cy - rr, width: rr * 2, height: rr * 2 }, (b0 * 180) / Math.PI, ((b1 - b0) * 180) / Math.PI);
-  return b.detach();
+  const x0 = cx + rr * Math.cos(s0);
+  const y0 = cy + rr * Math.sin(s0);
+  const x1 = cx + rr * Math.cos(s1);
+  const y1 = cy + rr * Math.sin(s1);
+  const large = Math.abs(s1 - s0) > Math.PI ? 1 : 0;
+  const sweep = s1 > s0 ? 1 : 0;
+  return `M ${x0} ${y0} A ${rr} ${rr} 0 ${large} ${sweep} ${x1} ${y1}`;
+};
+// Số giờ: điểm trên đường chữ (bán kính rt) tại góc mix(ta, tb, k), xoay theo hướng đi của cung (góc giảm dần) → chân chữ
+// nằm trên đường chữ, đầu chữ hướng vào tâm đĩa (giống TextPath của bản Skia)
+const labelAt = (k: number, cx0: number, cx1: number, cy0: number, cy1: number, rt: number, ta: number, tb: number) => {
+  'worklet';
+  const th = mix(ta, tb, k);
+  const x = mix(cx0, cx1, k) + rt * Math.cos(th);
+  const y = mix(cy0, cy1, k) + rt * Math.sin(th);
+  return { transform: [{ translateX: x }, { translateY: y }, { rotate: `${Math.atan2(-Math.cos(th), Math.sin(th))}rad` }] };
 };
 
 // Đổi bài: độ dời để đĩa khuất hẳn. Đang xem đĩa (lp 0): chéo về góc trên trái, đủ xa để cả vành (bán kính R) ra khỏi màn hình.
@@ -327,6 +339,28 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
       rot.value = withTiming(from + 10, { duration: 1400, easing: Easing.out(Easing.cubic) });
     }
   }, [spinning]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Tyson 21/11: "có lúc mở player lên đĩa đứng chứ không quay". Chưa rõ nguyên nhân → mỗi lần mở xong ~0,8s kiểm tra:
+  // ghi lý do đĩa đứng (nếu có), và nếu đáng lẽ phải quay mà góc xoay không đổi thì cho quay lại + ghi log để dò tiếp
+  const spinNow = useRef({ spinning, playing: p.isPlaying, fg, spin: dbg.spin });
+  spinNow.current = { spinning, playing: p.isPlaying, fg, spin: dbg.spin };
+  useEffect(() => {
+    if (!late) return;
+    const r0 = rot.value;
+    const id = setTimeout(() => {
+      const { spinning, playing, fg, spin } = spinNow.current;
+      const moved = Math.abs(rot.value - r0) > 0.5;
+      if (spinning && !moved) {
+        cancelAnimation(rot);
+        const from = rot.value % 360;
+        rot.value = withRepeat(withTiming(from + 360, { duration: 60000 / RPM, easing: Easing.linear }), -1, false);
+        log('ui', 'đĩa: đáng lẽ đang quay mà đứng yên → cho quay lại');
+      } else if (!spinning) {
+        const why = !playing ? 'nhạc đang dừng' : !fg ? 'app ở nền' : !spin ? 'tắt trong bảng dò lỗi' : reduced ? 'máy bật Giảm chuyển động' : 'chưa mở xong';
+        log('ui', `đĩa: đứng · vì ${why}`);
+      }
+    }, 800);
+    return () => clearTimeout(id);
+  }, [late]); // eslint-disable-line react-hooks/exhaustive-deps
   const run = late && fg && !reduced;
 
   // Báo cho hiệu ứng mở / đóng player (PlayerTransition) biết đang dùng đĩa than: ảnh bìa từ mini player chỉ mờ nhanh đi,
@@ -756,6 +790,15 @@ const FALLBACK: number[][] = [
   [0.2, 0.42, 0.62],
   [0.1, 0.12, 0.24],
 ];
+// Màu dự phòng cho nền khói từ một màu hex (#RRGGBB): màu đó + 3 biến thể đậm / nhạt
+function fromColor(hex?: string): number[][] | null {
+  const m = hex ? /^#?([0-9a-f]{6})/i.exec(hex) : null;
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  const c = [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+  const k = (f: number) => c.map((v) => Math.min(1, v * f));
+  return [k(0.9), k(1.35), k(0.6), k(0.35)];
+}
 const VinylBackdrop = React.memo(function VinylBackdrop({ color, grad, run, smoke }: { color?: string; grad: CoverGradient | null; run: boolean; smoke: boolean }) {
   const win = useScreenSize();
   const effect = useMemo(() => smokeShader(), []);
@@ -778,10 +821,11 @@ const VinylBackdrop = React.memo(function VinylBackdrop({ color, grad, run, smok
   }, [run, smoke]); // eslint-disable-line react-hooks/exhaustive-deps
   // 4 màu: nền tối của màu chính, rồi 3 màu nổi bật
   const target = useMemo(() => {
-    const c = grad?.rgb?.length ? grad.rgb : FALLBACK;
+    // chưa / không tính được màu ảnh bìa: dựng từ màu riêng của bài (track.color) để nền vẫn đổi theo bài mới
+    const c = grad?.rgb?.length ? grad.rgb : fromColor(color) ?? FALLBACK;
     const g = (i: number) => c[i % c.length];
     return [g(0).map((v) => v * 0.42), g(1), g(0), g(2)].flat();
-  }, [grad]);
+  }, [grad, color]);
   const from = useSharedValue(target);
   const to = useSharedValue(target);
   const k = useSharedValue(1);
@@ -1014,54 +1058,48 @@ const VinylArc = React.memo(function VinylArc({
     if (jump || !playing) posSV.value = withTiming(now, { duration: jump ? 250 : 150, easing: Easing.bezier(0.23, 1, 0.32, 1) });
     else posSV.value = withTiming(Math.min(1, (progress + 0.5) / duration), { duration: 500, easing: Easing.linear });
   }, [progress, duration, playing]); // eslint-disable-line react-hooks/exhaustive-deps
-  const font = getTimeFont();
-
   const curSec = scrubSec ?? (holding ? h.v * duration : progress);
   const cur = fmt(curSec);
   const right = loading ? t('common.loading') : failed ? t('np.failed') : fmt(duration);
-  const rightW = font.measureText(right).width;
 
   // ---- vẽ theo lp (vị trí nút: posSV, trên luồng giao diện)
-  const endSV = useDerivedValue(() => posSV.value);
-  const knobR = useDerivedValue(() => (scrubSV.value >= 0 ? 9 : 6.5));
+  // Bản Skia (Canvas) đôi lúc mở player lên không vẽ ra (21/11: Tyson chọn đổi sang react-native-svg). SVG là view native
+  // thường của iOS nên không phụ thuộc lớp Metal như Skia. Hình học giữ nguyên: cung tâm (cx, cy), bán kính r, chạy từ góc
+  // đầu bài tới góc cuối bài; số giờ là chữ thường xoay theo tiếp tuyến tại hai đầu đường chữ (chữ ngắn, cung rất lớn → gần
+  // như trùng chữ uốn cong của bản cũ)
   const { r, rt, cx0, cy0, cx1, cy1, a0, a1, b0, b1, ta0, ta1, tb0, tb1 } = g;
-  // Player đóng thì bị ẩn hẳn (display: none). Mở lại, vùng vẽ Skia không tự vẽ lại cho tới khi có giá trị đổi:
-  // đang phát thì giờ chạy liên tục nên thấy ngay, đang DỪNG thì thanh thời gian biến mất cho tới lúc bấm phát.
-  // Đọc playerProgress ở đây: suốt lúc player mở / đóng, thanh được vẽ lại từng khung hình → luôn hiện, kể cả khi dừng nhạc
-  const bar = useDerivedValue(() => {
-    // (playerProgress không bao giờ > 2: chỉ để thanh "phụ thuộc" vào nó; viết thành phép so sánh để bản build không lược bỏ)
-    const k = lp.value + (playerProgress.value > 2 ? 1 : 0);
-    return arcPath(mix(cx0, cx1, k), mix(cy0, cy1, k), r, mix(a0, b0, k), mix(a1, b1, k));
-  });
-  const textPath = useDerivedValue(() => {
-    // (playerProgress không bao giờ > 2: chỉ để thanh "phụ thuộc" vào nó; viết thành phép so sánh để bản build không lược bỏ)
-    const k = lp.value + (playerProgress.value > 2 ? 1 : 0);
-    return arcPath(mix(cx0, cx1, k), mix(cy0, cy1, k), rt, mix(ta0, tb0, k), mix(ta1, tb1, k));
-  });
-  const rightOff = useDerivedValue(() => {
+  const trackProps = useAnimatedProps(() => {
     const k = lp.value;
-    return Math.max(0, rt * (mix(ta0, tb0, k) - mix(ta1, tb1, k)) - rightW);
-  }, [rightW]);
-  const knobX = useDerivedValue(() => {
+    return { d: svgArc(mix(cx0, cx1, k), mix(cy0, cy1, k), r, mix(a0, b0, k), mix(a1, b1, k)) };
+  });
+  const fillProps = useAnimatedProps(() => {
+    const k = lp.value;
+    const s0 = mix(a0, b0, k);
+    return { d: svgArc(mix(cx0, cx1, k), mix(cy0, cy1, k), r, s0, mix(s0, mix(a1, b1, k), posSV.value)), stroke: accent.value };
+  });
+  const knobProps = useAnimatedProps(() => {
     const k = lp.value;
     const a = mix(mix(a0, b0, k), mix(a1, b1, k), posSV.value);
-    return mix(cx0, cx1, k) + r * Math.cos(a);
+    return { cx: mix(cx0, cx1, k) + r * Math.cos(a), cy: mix(cy0, cy1, k) + r * Math.sin(a), r: scrubSV.value >= 0 ? 9 : 6.5 };
   });
-  const knobY = useDerivedValue(() => {
-    const k = lp.value;
-    const a = mix(mix(a0, b0, k), mix(a1, b1, k), posSV.value);
-    return mix(cy0, cy1, k) + r * Math.sin(a);
-  });
+  const leftLabel = useAnimatedStyle(() => labelAt(lp.value, cx0, cx1, cy0, cy1, rt, ta0, tb0));
+  const rightLabel = useAnimatedStyle(() => labelAt(lp.value, cx0, cx1, cy0, cy1, rt, ta1, tb1));
 
   return (
     <>
-      <Canvas style={StyleSheet.absoluteFill} pointerEvents="none">
-        <Path path={bar} style="stroke" strokeWidth={3} strokeCap="round" color="rgba(255,255,255,0.18)" />
-        <Path path={bar} style="stroke" strokeWidth={3} strokeCap="round" color={accent} start={0} end={endSV} />
-        <Circle cx={knobX} cy={knobY} r={knobR} color="#FFFFFF" />
-        <TextPath path={textPath} font={font} text={cur} initialOffset={0} color={TEXT2} />
-        <TextPath path={textPath} font={font} text={right} initialOffset={rightOff} color={failed ? '#FF8A80' : TEXT2} />
-      </Canvas>
+      <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
+        <AnimatedSvgPath animatedProps={trackProps} stroke="rgba(255,255,255,0.18)" strokeWidth={3} strokeLinecap="round" fill="none" />
+        <AnimatedSvgPath animatedProps={fillProps} strokeWidth={3} strokeLinecap="round" fill="none" />
+        <AnimatedSvgCircle animatedProps={knobProps} fill="#FFFFFF" />
+      </Svg>
+      {/* số giờ: khung 0×0 đặt ở đầu đường chữ, xoay theo tiếp tuyến; chữ bám chân vào gốc khung (trái: bắt đầu tại gốc,
+          phải: kết thúc tại gốc) */}
+      <Animated.View pointerEvents="none" style={[styles.label, leftLabel]}>
+        <Text numberOfLines={1} style={[styles.labelText, { left: 0 }]}>{cur}</Text>
+      </Animated.View>
+      <Animated.View pointerEvents="none" style={[styles.label, rightLabel]}>
+        <Text numberOfLines={1} style={[styles.labelText, { right: 0, textAlign: 'right' }, failed && { color: '#FF8A80' }]}>{right}</Text>
+      </Animated.View>
     </>
   );
 });
@@ -1086,5 +1124,7 @@ const styles = StyleSheet.create({
   },
   pillCell: { width: 52, height: PILL, alignItems: 'center', justifyContent: 'center' },
   pillSep: { width: StyleSheet.hairlineWidth * 2, height: 20, backgroundColor: 'rgba(255,255,255,0.28)' },
+  label: { position: 'absolute', left: 0, top: 0, width: 0, height: 0 },
+  labelText: { position: 'absolute', bottom: -3, width: 120, color: TEXT2, fontSize: 12, fontWeight: '600', fontFamily: Platform.select({ ios: 'Helvetica Neue', default: undefined }) },
   btn: { width: 62, height: 56, borderRadius: 16, borderCurve: 'continuous', alignItems: 'center', justifyContent: 'center' },
 });

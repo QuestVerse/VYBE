@@ -377,7 +377,7 @@ function Root() {
         <BackdropBlur />
         <OfflineBanner />
         {/* Dock Apple Music có mini player riêng (viên thuốc) → không dựng bong bóng mini player */}
-        {!(theme.dock.mode === 'apple' || (theme.dock.mode === 'zyx' && !landscape)) && <MiniPlayer hidden={tab === 'player' || playerUp} onOpen={() => setTab('player')} />}
+        {!(theme.dock.mode === 'apple' || theme.dock.mode === 'zyx') && <MiniPlayer hidden={tab === 'player' || playerUp} onOpen={() => setTab('player')} />}
           {/* Dock: kiểu Apple Music hoặc dạng thanh (kéo đổi chỗ được) — Cài đặt → Kiểu dock */}
           {theme.dock.mode === 'apple' && !landscape ? (
             <AppleDock active={tab} onChange={go} onOpenPlayer={() => setTab('player')} hidden={tab === 'player' || playerUp} />
@@ -386,6 +386,9 @@ function Root() {
             <AppleDockLand active={tab} onChange={go} onOpenPlayer={() => setTab('player')} hidden={tab === 'player' || playerUp} />
           ) : theme.dock.mode === 'zyx' && !landscape ? (
             <ZyxDock active={tab} onChange={go} onOpenPlayer={() => setTab('player')} hidden={tab === 'player' || playerUp} />
+          ) : theme.dock.mode === 'zyx' ? (
+            // xoay ngang: cùng bố cục với Apple Music, góc vuông vức của ZYX
+            <AppleDockLand square active={tab} onChange={go} onOpenPlayer={() => setTab('player')} hidden={tab === 'player' || playerUp} />
           ) : (
             <FloatingDock active={tab} onChange={go} hidden={tab === 'player'} />
           )}
