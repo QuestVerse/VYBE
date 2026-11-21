@@ -14,6 +14,10 @@
 </div>
 
 <p align="center">
+  <img src="docs/donate.png" width="100%" alt="Enjoying ZYX? Buy me a coffee — scan the Vietcombank QR code" />
+</p>
+
+<p align="center">
   <img src="docs/screenshots/portrait.png" width="100%" alt="ZYX home, vinyl player and library screens" />
 </p>
 <p align="center">
