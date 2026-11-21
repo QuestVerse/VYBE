@@ -146,3 +146,55 @@ export function useOnlyDownloaded(): boolean {
   );
 }
 export const isDownloaded = (id: string) => known().has(id);
+
+// ---- Tải cả album / playlist (nút tải cạnh nút Phát ở trang danh sách bài — Tyson 21/11) ----
+// Chạy ở đây (ngoài màn hình) nên rời trang vẫn tải tiếp. Tải 2 bài cùng lúc, bài nào lỗi thì bỏ qua và đếm lại.
+// key: định danh danh sách (vd. "yt:<id>"); mỗi danh sách chỉ có một lượt tải chạy cùng lúc
+type Batch = { done: number; failed: number; total: number; cancelled: boolean };
+const batches = new Map<string, Batch>();
+export function batchOf(key: string): Batch | null {
+  return batches.get(key) ?? null;
+}
+export async function downloadAll(key: string, tracks: Track[], label: string) {
+  if (Platform.OS === 'web' || batches.has(key)) return;
+  const todo = tracks.filter((t) => !known().has(t.id));
+  if (!todo.length) return;
+  const b: Batch = { done: 0, failed: 0, total: todo.length, cancelled: false };
+  batches.set(key, b);
+  emit();
+  log('music', `tải cả "${label}": bắt đầu ${todo.length} bài`);
+  const t0 = Date.now();
+  let next = 0;
+  const worker = async () => {
+    while (!b.cancelled && next < todo.length) {
+      const t = todo[next++];
+      if (await download(t)) b.done++;
+      else b.failed++;
+      emit();
+    }
+  };
+  await Promise.all([worker(), worker()]);
+  batches.delete(key);
+  emit();
+  log(
+    'music',
+    `tải cả "${label}": ${b.cancelled ? 'đã dừng giữa chừng' : 'xong'} — tải được ${b.done}/${b.total} bài` +
+      `${b.failed ? `, ${b.failed} bài lỗi` : ''} (${Math.round((Date.now() - t0) / 1000)} giây)`
+  );
+}
+// Dừng lượt tải: bài đang tải dở vẫn tải nốt, các bài sau thì thôi
+export function cancelBatch(key: string) {
+  const b = batches.get(key);
+  if (b) b.cancelled = true;
+  emit();
+}
+// Xoá bản tải của cả danh sách (vẫn nghe online được)
+export function removeAll(tracks: Track[]) {
+  let n = 0;
+  for (const t of tracks) {
+    if (!known().has(t.id)) continue;
+    removeDownload(t);
+    n++;
+  }
+  if (n) log('music', `xoá bản tải: ${n} bài`);
+}

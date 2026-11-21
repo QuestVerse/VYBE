@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useOffline } from '../data/net';
-import { isDownloaded, setOnlyDownloaded, useDownloads, useOnlyDownloaded } from '../data/downloads';
+import { batchOf, cancelBatch, downloadAll, isDownloaded, removeAll, setOnlyDownloaded, useDownloads, useOnlyDownloaded } from '../data/downloads';
 import { Stagger } from '../components/Stagger';
 import { loadTrendingSummed, parseTrendingId } from '../data/trending';
 import { FadeBottom } from '../components/FadeBottom';
@@ -34,6 +34,7 @@ import { currentAccount } from '../data/auth';
 import { fetchSharedPlaylist } from '../data/community';
 
 type Row = Track & { position?: number };
+const DL_GREEN = '#34C759'; // xanh lá kiểu iOS: cả danh sách đã tải về máy
 type Info = { title: string; subtitle: string; thumb?: string; owner?: Collection['owner']; description?: string; cover?: string };
 
 const fmtTotal = (sec: number, t: Translate) => {
@@ -72,6 +73,11 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
   const onlyDl = useOnlyDownloaded() || offlineNow;
   useDownloads();
   const rows = onlyDl ? allRows.filter((r) => isDownloaded(r.id)) : allRows;
+  // Nút tải cả danh sách (bên phải nút Phát): xanh lá khi mọi bài đã tải; đang tải thì hiện số bài đã xong / tổng
+  const dlKey = `${page.source}:${page.id}`;
+  const batch = batchOf(dlKey);
+  const dlCount = allRows.reduce((n, r) => n + (isDownloaded(r.id) ? 1 : 0), 0);
+  const allDl = allRows.length > 0 && dlCount === allRows.length;
   const [info, setInfo] = useState<Info>({ title: page.title, subtitle: '', thumb: page.thumb });
   const [status, setStatus] = useState<'loading' | 'done' | 'error'>('loading');
   const [isPublic, setIsPublic] = useState(false);
@@ -188,6 +194,22 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
 
   const openOwner = () => {
     if (info.owner?.id) push({ type: 'artist', id: info.owner.id, name: info.owner.name, thumb: info.owner.thumb });
+  };
+  const onDownloadAll = () => {
+    if (batch) {
+      cancelBatch(dlKey);
+      sheet.toast(t('col.dlStopped'));
+      return;
+    }
+    if (allDl) {
+      sheet.openActions({ title: t('col.dlRemoveTitle'), subtitle: t('col.dlRemoveMsg', { n: String(dlCount) }), thumb: info.thumb, icon: 'arrow-down-circle' }, [
+        { label: t('col.dlRemove'), icon: 'trash-outline', destructive: true, run: () => removeAll(allRows) },
+      ]);
+      return;
+    }
+    if (offlineNow) return sheet.toast(t('col.dlOffline'));
+    sheet.toast(t('col.dlStarted', { n: String(allRows.length - dlCount) }));
+    void downloadAll(dlKey, allRows, info.title);
   };
   const rename = () =>
     sheet.openInput({ title: t('col.renameTitle'), initial: info.title, submit: t('sheet.save'), onSubmit: (v) => v.trim() && renamePlaylist(page.id, v.trim()) });
@@ -313,6 +335,23 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
           <Ionicons name="play" size={22} color={bg} />
           <Text style={{ color: bg, fontSize: 18, fontWeight: '800' }}>{t('col.play')}</Text>
         </Pressable>
+        {/* Tải cả danh sách: chưa tải → mũi tên; đang tải → "đã xong/tổng" (chạm để dừng); tải hết → xanh lá (chạm để xoá bản tải) */}
+        <Pressable
+          onPress={onDownloadAll}
+          disabled={!allRows.length}
+          accessibilityLabel={t(allDl ? 'col.dlDone' : batch ? 'col.dlStop' : 'col.dlAll')}
+          style={[styles.roundBtn, gs, allDl && { borderWidth: 1.5, borderColor: DL_GREEN }, { opacity: allRows.length ? 1 : 0.4 }]}
+        >
+          {roundGlass}
+          {batch ? (
+            <>
+              <ActivityIndicator size="small" color={accent} style={StyleSheet.absoluteFill} />
+              <Text style={{ color: text, fontSize: 11, fontWeight: '800' }}>{`${batch.done + batch.failed}/${batch.total}`}</Text>
+            </>
+          ) : (
+            <Ionicons name={allDl ? 'arrow-down-circle' : 'arrow-down-circle-outline'} size={26} color={allDl ? DL_GREEN : text} />
+          )}
+        </Pressable>
         {yt ? (
           <Pressable onPress={toggleSaved} style={[styles.roundBtn, gs]}>
           {roundGlass}
@@ -323,9 +362,7 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
           {roundGlass}
             <Ionicons name="pencil" size={20} color={text} />
           </Pressable>
-        ) : (
-          <View style={styles.roundBtn} />
-        )}
+        ) : null}
       </View>
 
     </>
