@@ -144,7 +144,11 @@ export function hasNext() {
   return p.currentIndex < p.trackCount - 1;
 }
 
+// Nhớ chế độ lặp ở JS: ĐỌC `player.loop` trên Android bị lỗi "Player is accessed on the wrong thread" (expo-audio gọi
+// ExoPlayer.getRepeatMode từ luồng JS) — Sentry REACT-NATIVE-3, 300+ lần ở crossfadeTick mỗi 0,5 giây
+let loopOne = false;
 export function setLoopOne(one: boolean) {
+  loopOne = one;
   getPlayer().loop = one ? 'single' : 'none';
 }
 
@@ -214,7 +218,7 @@ export function crossfadeTick(time: number, duration: number, playing: boolean, 
     return;
   }
   const p = pl;
-  if (!p || !xfadeOn || !allowed || !playing || !(duration >= 30) || p.loop === 'single' || rate !== 1) {
+  if (!p || !xfadeOn || !allowed || !playing || !(duration >= 30) || loopOne || rate !== 1) {
     if (xState === 'prep') endCrossfade();
     return;
   }
