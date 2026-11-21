@@ -13,6 +13,17 @@
 
 </div>
 
+<p align="center">
+  <img src="docs/screenshots/portrait.png" width="100%" alt="ZYX home, vinyl player and library screens" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/landscape-player.png" width="80%" alt="Vinyl player with synced lyrics in landscape" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/landscape-home.png" width="49%" alt="Home screen in landscape with the vertical dock" />
+  <img src="docs/screenshots/landscape-library.png" width="49%" alt="Library in landscape" />
+</p>
+
 ---
 
 ## Features
@@ -61,4 +72,4 @@ ZYX is built with Expo and React Native. Pull requests are welcome — for big c
 
 ## License
 
-[MIT](LICENSE) © Nguyễn Minh Trí (Tyson). You're free to use and change the code, as long as you keep the copyright notice.
+[MIT](LICENSE) © Henry Wizzrd. You're free to use and change the code, as long as you keep the copyright notice.
