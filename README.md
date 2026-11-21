@@ -7,7 +7,7 @@
 **A music player for iPhone and Android that cares how your music looks as much as how it sounds.**
 
 [![Download](https://img.shields.io/github/v/release/henrywizzrd/zyx?label=Download&style=for-the-badge&color=8B5A2B)](https://github.com/henrywizzrd/zyx/releases/latest)
-[![Discord](https://img.shields.io/badge/Discord-Join%20us-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/ErAKwNmsZ)
+[![Discord](https://img.shields.io/badge/Discord-Join%20us-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/stmhyUDurQ)
 ![Platforms](https://img.shields.io/badge/iOS%20%7C%20Android-1f1f1f?style=for-the-badge)
 [![License: MIT](https://img.shields.io/badge/License-MIT-3d3d3d?style=for-the-badge)](LICENSE)
 
@@ -59,7 +59,7 @@ After the first install, updates arrive inside the app — close and reopen it t
 ## Report a bug
 
 1. In the app, open **Settings › Log**.
-2. Tap share and post the log with a short description of what happened in our [Discord](https://discord.gg/ErAKwNmsZ).
+2. Tap share and post the log with a short description of what happened in our [Discord](https://discord.gg/stmhyUDurQ).
 
 ## Build from source
 
