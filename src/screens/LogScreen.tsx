@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Alert, FlatList, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { resetVinylFlags, setVinylFlag, useVinylFlags, VINYL_FLAGS } from '../debug/vinylFlags';
+import { isStableBuild } from '../data/channel';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeProvider';
 import { useContentInsets } from '../components/FloatingDock';
@@ -79,7 +80,9 @@ export function LogScreen() {
         </View>
       </View>
       <Text style={{ color: textSecondary, fontSize: 13, marginTop: 10 }}>{t('log.hint')}</Text>
-      {/* Dò lỗi player đĩa than: tắt từng phần rồi mở / đóng player, xem nhật ký còn "khựng" không (tạm thời, sẽ gỡ) */}
+      {/* Dò lỗi player đĩa than: tắt từng phần rồi mở / đóng player, xem nhật ký còn "khựng" không (tạm thời, sẽ gỡ).
+          Ẩn ở bản ổn định cho người dùng (kênh production) */}
+      {!isStableBuild() && (
       <View style={[styles.debugBox, { borderColor: border, backgroundColor: surface }]}>
         <Pressable onPress={() => setDebugOpen((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <Ionicons name="bug-outline" size={18} color={text} />
@@ -108,6 +111,7 @@ export function LogScreen() {
           </View>
         )}
       </View>
+      )}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 14 }}>
         {FILTERS.map((f) => {
           const on = f === filter;

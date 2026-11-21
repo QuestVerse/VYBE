@@ -6,6 +6,12 @@
 #  - Android: file APK cài thẳng lên máy (ký bằng khoá debug, chỉ để thử nghiệm)
 #  - iOS: file IPA CHƯA KÝ -> dùng Sideloadly + Apple ID (miễn phí) để ký và cài lên iPhone
 # Xong thì tải 2 file ở mục "Artifacts" cuối trang của lần chạy
+#
+# BẢN ỔN ĐỊNH cho người dùng (từ v1.1.0): commit có chữ [release] (trên nhánh main) →
+#  - build APK + IPA với kênh cập nhật "production" (người dùng KHÔNG nhận các bản [update] thử nghiệm)
+#  - tạo Release chính thức "ZYX v<version>" (không phải pre-release, đánh dấu Latest), tag v<version>
+#  - đẩy luôn bản JS đó lên kênh production (app ổn định đã cài sẽ tự cập nhật)
+#  APK (cả bản thử lẫn bản ổn định) ký bằng khoá riêng của ZYX nếu có secret ANDROID_KEYSTORE_BASE64 (scripts/ci/android-signing.js)
 name: Build test apps
 
 on:
@@ -16,7 +22,7 @@ on:
 
 jobs:
   android:
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[build]')
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[build]') || contains(github.event.head_commit.message, '[release]')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -30,13 +36,23 @@ jobs:
           distribution: zulu
           java-version: 17
       - run: npm ci
+      - name: Kênh cập nhật
+        if: contains(github.event.head_commit.message, '[release]')
+        run: node scripts/ci/set-channel.js production
       - run: npx expo prebuild --platform android --no-install
+      - name: Ký bằng khoá riêng của ZYX
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: node scripts/ci/android-signing.js
       - name: Build APK
         working-directory: android
         # Sentry: gửi bản đồ mã (source map) lên để báo lỗi chỉ đúng dòng code. Lỗi gửi thì bỏ qua, không làm hỏng bản build
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ALLOW_FAILURE: true
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         # Chỉ build cho chip arm64 (mọi điện thoại Android vài năm gần đây) cho nhanh và nhẹ.
         # Tắt R8 (thu gọn / làm rối mã Java): bản Expo hiện tại bật sẵn nhưng R8 xoá nhầm một hàm của expo-modules
         # → expo-sqlite không nạp được → app văng ngay khi mở ("Cannot find native module 'ExpoSQLite'")
@@ -48,7 +64,7 @@ jobs:
           path: Zyx.apk
 
   ios:
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[build]')
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[build]') || contains(github.event.head_commit.message, '[release]')
     runs-on: macos-26
     timeout-minutes: 90
     steps:
@@ -61,6 +77,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Kênh cập nhật
+        if: contains(github.event.head_commit.message, '[release]')
+        run: node scripts/ci/set-channel.js production
       - run: npx expo prebuild --platform ios
       - name: Build (không ký)
         env:
@@ -102,7 +121,22 @@ jobs:
           path: out
           merge-multiple: true
       # Dùng gh (có sẵn trên máy build) thay cho action cũ: action đó hay lỗi giữa chừng khi tải nhiều file lên cùng lúc
+      - uses: actions/checkout@v5
+        with:
+          path: src
+      - name: Tạo Release chính thức (bản ổn định)
+        if: contains(github.event.head_commit.message, '[release]')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(node -p "require('./src/app.json').expo.version")
+          NOTES=src/RELEASE_NOTES.md
+          [ -f "$NOTES" ] || { echo "ZYX v$VER" > notes.md; NOTES=notes.md; }
+          gh release create "v$VER" out/Zyx.apk out/Zyx-unsigned.ipa \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
+            --title "ZYX v$VER" --notes-file "$NOTES"
       - name: Tạo Release
+        if: ${{ !contains(github.event.head_commit.message, '[release]') }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: test-build-${{ github.run_number }}
@@ -117,7 +151,7 @@ jobs:
   # Cập nhật qua mạng (EAS Update): app đã cài tự tải bản mới, không cần cài lại.
   # Chỉ dùng được cho thay đổi JS / ảnh. Thêm thư viện native, đổi icon, tên app, quyền... thì phải [build] lại
   update:
-    if: github.event_name == 'push' && contains(github.event.head_commit.message, '[update]')
+    if: github.event_name == 'push' && (contains(github.event.head_commit.message, '[update]') || contains(github.event.head_commit.message, '[release]'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -128,17 +162,18 @@ jobs:
           cache: npm
       - run: npm ci
       # Đẩy riêng iOS và Android: để "all" thì nó đóng gói cả bản web (app không dùng web, và expo-sqlite trên web lỗi)
-      - name: Đẩy bản cập nhật lên kênh preview
+      - name: Đẩy bản cập nhật (preview cho [update], production cho [release])
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           MSG: ${{ github.event.head_commit.message }}
+          CH: ${{ contains(github.event.head_commit.message, '[release]') && 'production' || 'preview' }}
           CI: 1
         run: |
           # Sau mỗi lần đẩy: gửi source map của bản cập nhật lên Sentry (lỗi thì bỏ qua)
-          npx --yes eas-cli@latest update --channel preview --platform ios --message "$MSG" --non-interactive
+          npx --yes eas-cli@latest update --channel "$CH" --platform ios --message "$MSG" --non-interactive
           npx sentry-expo-upload-sourcemaps dist || echo "Sentry: không gửi được source map iOS"
-          npx --yes eas-cli@latest update --channel preview --platform android --message "$MSG" --non-interactive
+          npx --yes eas-cli@latest update --channel "$CH" --platform android --message "$MSG" --non-interactive
           npx sentry-expo-upload-sourcemaps dist || echo "Sentry: không gửi được source map Android"
 
   # Kiểm tra giao diện tự động trên máy ảo Android: chỉ chạy khi lời nhắn commit có [check].
