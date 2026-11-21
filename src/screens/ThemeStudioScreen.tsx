@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { ActivityIndicator, Alert, GestureResponderEvent, Pressable, ScrollView, StyleSheet, Switch, Text, useColorScheme, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Alert, GestureResponderEvent, Pressable, ScrollView, StyleSheet, Switch, Text, useColorScheme, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { systemPreset, useTheme } from '../theme/ThemeProvider';
 import { useThemeTransition } from '../theme/ThemeTransition';
@@ -11,6 +11,11 @@ import { useNav } from '../nav/Nav';
 import { useAnimatedBack } from '../nav/SwipeBack';
 import { useT } from '../i18n';
 import { copyIntoApp, deleteAppFile } from '../data/files';
+import { useScreenSize } from '../components/ScreenSize';
+import { useRenderProbe } from '../components/JankMonitor';
+import { LinearGradient } from 'expo-linear-gradient';
+import Animated, { useAnimatedStyle, withTiming } from 'react-native-reanimated';
+import { SMOKE_COLORS, SMOKE_TONES, type SmokeTone } from '../theme/smokeTones';
 
 const PAD = 16;
 const GAP = 12;
@@ -44,6 +49,66 @@ function MiniScreen({ p, id, width, h }: { p: Palette; id: ThemePresetId; width:
         [[0.08, 0.06, 30], [0.82, 0.5, -20], [0.12, 0.66, 70]].map(([x, y, r], i) => (
           <View key={i} style={{ position: 'absolute', left: x * width, top: y * h, width: 7, height: 10, borderRadius: 5, backgroundColor: '#8A5A3B', opacity: 0.6, transform: [{ rotate: `${r}deg` }] }} />
         ))}
+      {id === 'sakura' &&
+        [[0.12, 0.08, 20], [0.78, 0.2, -30], [0.42, 0.46, 60], [0.86, 0.6, 10], [0.2, 0.7, -50]].map(([x, y, r], i) => (
+          <View key={`s${i}`} style={{ position: 'absolute', left: x * width, top: y * h, width: 7, height: 9, borderTopLeftRadius: 5, borderTopRightRadius: 5, borderBottomLeftRadius: 4, borderBottomRightRadius: 1, backgroundColor: '#F4A6BF', transform: [{ rotate: `${r}deg` }] }} />
+        ))}
+      {id === 'meteor' && (
+        <>
+          {[[0.12, 0.2], [0.8, 0.12], [0.5, 0.42], [0.3, 0.6], [0.9, 0.55], [0.65, 0.25]].map(([x, y], i) => (
+            <View key={`m${i}`} style={{ position: 'absolute', left: x * width, top: y * h, width: 2, height: 2, borderRadius: 1, backgroundColor: '#FFFFFF' }} />
+          ))}
+          <View style={{ position: 'absolute', left: width * 0.45, top: h * 0.22, width: width * 0.3, height: 1.2, backgroundColor: 'rgba(255,255,255,0.7)', transform: [{ rotate: '-38deg' }] }} />
+        </>
+      )}
+      {id === 'starry' && (
+        <>
+          {/* dải ngân hà tím mờ chéo qua + vài ngôi sao có quầng */}
+          <View style={{ position: 'absolute', left: -width * 0.2, top: h * 0.38, width: width * 1.4, height: h * 0.16, borderRadius: h, backgroundColor: 'rgba(140,110,230,0.22)', transform: [{ rotate: '-22deg' }] }} />
+          {[[0.15, 0.12, 2], [0.78, 0.1, 3], [0.55, 0.36, 2], [0.3, 0.52, 2], [0.86, 0.48, 2], [0.62, 0.68, 3], [0.1, 0.78, 2]].map(([x, y, r], i) => (
+            <View key={`st${i}`} style={{ position: 'absolute', left: x * width, top: y * h, width: r, height: r, borderRadius: r, backgroundColor: '#FFFFFF', shadowColor: '#C9D4FF', shadowOpacity: 0.9, shadowRadius: 3, shadowOffset: { width: 0, height: 0 } }} />
+          ))}
+        </>
+      )}
+      {id === 'aurora' && (
+        <>
+          <View style={{ position: 'absolute', left: -width * 0.1, top: h * 0.14, width: width * 1.2, height: h * 0.12, borderRadius: h, backgroundColor: 'rgba(61,245,160,0.35)', transform: [{ rotate: '-8deg' }] }} />
+          <View style={{ position: 'absolute', left: -width * 0.1, top: h * 0.22, width: width * 1.2, height: h * 0.08, borderRadius: h, backgroundColor: 'rgba(155,108,255,0.3)', transform: [{ rotate: '5deg' }] }} />
+          {[[0.15, 0.5], [0.8, 0.08], [0.6, 0.45], [0.35, 0.06]].map(([x, y], i) => (
+            <View key={`a${i}`} style={{ position: 'absolute', left: x * width, top: y * h, width: 2, height: 2, borderRadius: 1, backgroundColor: '#FFFFFF' }} />
+          ))}
+        </>
+      )}
+      {id === 'rain' && (
+        <>
+          {[[0.1, 0.12, 3], [0.3, 0.4, 2], [0.7, 0.1, 4], [0.85, 0.35, 2], [0.5, 0.6, 3], [0.2, 0.7, 2], [0.62, 0.3, 2]].map(([x, y, r], i) => (
+            <View key={`r${i}`} style={{ position: 'absolute', left: x * width, top: y * h, width: r * 2, height: r * 2.3, borderRadius: r, backgroundColor: 'rgba(255,255,255,0.22)' }} />
+          ))}
+          <View style={{ position: 'absolute', left: width * 0.78, top: h * 0.4, width: 2, height: h * 0.28, borderRadius: 1, backgroundColor: 'rgba(255,255,255,0.18)' }} />
+        </>
+      )}
+      {id === 'neon' && (
+        <>
+          <View style={{ position: 'absolute', left: 0, right: 0, top: h * 0.62, height: 1.5, backgroundColor: '#FF7AE0' }} />
+          {[0.72, 0.8, 0.9].map((y, i) => (
+            <View key={`n${i}`} style={{ position: 'absolute', left: 0, right: 0, top: y * h, height: 1, backgroundColor: 'rgba(0,240,255,0.6)' }} />
+          ))}
+        </>
+      )}
+      {id === 'smoke' && (
+        <>
+          <View style={{ position: 'absolute', left: -width * 0.15, top: h * 0.15, width: width * 0.8, height: h * 0.45, borderRadius: h, backgroundColor: 'rgba(158,97,33,0.45)', transform: [{ rotate: '-18deg' }] }} />
+          <View style={{ position: 'absolute', left: width * 0.4, top: h * 0.5, width: width * 0.75, height: h * 0.35, borderRadius: h, backgroundColor: 'rgba(92,51,19,0.6)', transform: [{ rotate: '12deg' }] }} />
+          <View style={{ position: 'absolute', left: width * 0.2, top: h * 0.05, width: width * 0.35, height: h * 0.18, borderRadius: h, backgroundColor: 'rgba(232,168,98,0.25)' }} />
+        </>
+      )}
+      {id === 'cover' && (
+        <View style={{ position: 'absolute', right: 10, top: 10, flexDirection: 'row', gap: 3 }}>
+          {['#E2574C', '#F2B134', '#3E8EDE'].map((c) => (
+            <View key={c} style={{ width: 9, height: 9, borderRadius: 5, backgroundColor: c }} />
+          ))}
+        </View>
+      )}
       {id === 'ocean' &&
         [[0.85, 0.62, 6], [0.8, 0.5, 4], [0.86, 0.4, 3], [0.1, 0.58, 5]].map(([x, y, r], i) => (
           <View key={i} style={{ position: 'absolute', left: x * width, top: y * h, width: r, height: r, borderRadius: r, borderWidth: 1, borderColor: '#5B8FC9' }} />
@@ -104,22 +169,29 @@ function PresetCard({ id, selected, width, onPress }: {
 }
 
 // Trang Giao diện: bộ màu, nền (màu / ảnh / GIF / video), độ tối nền, độ mờ kính
+// Màu đèn neon cho loại kính Neon ('' = theo màu nhấn của theme)
+const NEON_COLORS = ['', '#7EF0FF', '#FF5FD2', '#B78CFF', '#6CFF9E', '#FFD15C', '#FF8A3D', '#FF4D6D'];
+
 export function ThemeStudioScreen() {
-  const { theme, setBackground, setGlassBlur, setAmbient } = useTheme();
+  const { theme, setBackground, setGlassBlur, setGlassMaterial, setGlassNeon, setAmbient, setMeteorLevel, setSmokeTone, setSmokeSpeed } = useTheme();
   const { changePreset } = useThemeTransition();
   const scheme = useColorScheme();
   const t = useT();
   const pad = useContentInsets();
-  const { width } = useWindowDimensions();
+  const { width } = useScreenSize();
   const { pop } = useNav();
   const goBack = useAnimatedBack() ?? pop;
   const [picking, setPicking] = useState<BackgroundType | null>(null);
   const { text, textSecondary, accent, onAccent, surface, border } = theme.colors;
   const bg = theme.background;
   const hasMedia = bg.type !== 'preset' && !!bg.uri;
+  useRenderProbe('Giao diện (studio)', { theme, width, picking, pad });
 
   const dimS = useThrottle((v: number) => setBackground({ dim: Math.round(v * 0.8 * 100) / 100 }));
   const blurS = useThrottle((v: number) => setGlassBlur(Math.round(v * 100)));
+  // thanh 0..1 ↔ tốc độ khói 0.3..2
+  const smokeS = useThrottle((v: number) => setSmokeSpeed(0.3 + v * 1.7));
+  const smokeSpeed = theme.effects.smokeSpeed ?? 1;
 
   const cols = width >= 600 ? 3 : 2;
   const cardW = Math.floor((Math.min(width, 520) - PAD * 2 - GAP * (cols - 1)) / cols);
@@ -168,8 +240,6 @@ export function ThemeStudioScreen() {
   return (
     <View style={StyleSheet.absoluteFill}>
       <ScrollView
-        bounces={false}
-        overScrollMode="never"
         contentContainerStyle={{
           paddingTop: pad.top + 8,
           paddingBottom: pad.bottom + pad.endPadding,
@@ -227,6 +297,58 @@ export function ThemeStudioScreen() {
           </View>
         )}
 
+        {/* Bộ Mưa sao băng: chọn mật độ sao băng */}
+        {theme.preset === 'meteor' && theme.effects.ambient.meteor && (
+          <>
+            <Text style={[styles.label, { color: text, marginTop: 16 }]}>{t('studio.meteorLevel')}</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+              {([0, 1, 2, 3] as const).map((lv) => {
+                const on = (theme.effects.meteorLevel ?? 1) === lv;
+                return (
+                  <Pressable key={lv} onPress={() => setMeteorLevel(lv)} style={[styles.chip, { backgroundColor: on ? accent : surface, borderColor: border }]}>
+                    <Text style={{ color: on ? onAccent : text, fontWeight: '700', fontSize: 13 }}>{t(`studio.meteorLevel.${lv}`)}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </>
+        )}
+
+        {/* Bộ Khói màu: chọn dải màu (đổi cả nền khói lẫn màu giao diện) + tốc độ khói */}
+        {theme.preset === 'smoke' && (
+          <>
+            <Text style={[styles.label, { color: text, marginTop: 16 }]}>{t('studio.smokeTone')}</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 10 }}>
+              {SMOKE_TONES.map((tone) => (
+                <ToneChip
+                  key={tone}
+                  tone={tone}
+                  label={t(`studio.smokeTone.${tone}`)}
+                  on={(theme.effects.smokeTone ?? 'coffee') === tone}
+                  ring={accent}
+                  text={text}
+                  dim={textSecondary}
+                  onPress={() => setSmokeTone(tone)}
+                />
+              ))}
+            </View>
+            {(theme.effects.smokeTone ?? 'coffee') === 'cover' && (
+              <Text style={{ color: textSecondary, fontSize: 12, marginTop: 8 }}>{t('studio.coverHint')}</Text>
+            )}
+            {theme.effects.ambient.smoke && (
+              <>
+                <View style={styles.sliderHead}>
+                  <Text style={[styles.label, { color: text }]}>{t('studio.smokeSpeed')}</Text>
+                  <Text style={{ color: textSecondary, fontSize: 13 }}>{smokeSpeed.toFixed(1)}×</Text>
+                </View>
+                <Slider value={(smokeSpeed - 0.3) / 1.7} thickness={6} fill={accent} track={border} onChange={smokeS.change} onCommit={smokeS.commit} />
+              </>
+            )}
+          </>
+        )}
+
+        {theme.preset === 'cover' && <Text style={{ color: textSecondary, fontSize: 12, marginTop: 14 }}>{t('studio.coverHint')}</Text>}
+
         {/* Nền */}
         <Text style={[styles.section, { color: text }]}>{t('studio.background')}</Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
@@ -244,6 +366,52 @@ export function ThemeStudioScreen() {
             </View>
             <Slider value={bg.dim / 0.8} thickness={6} fill={accent} track={border} onChange={dimS.change} onCommit={dimS.commit} />
           </>
+        )}
+
+        {/* Loại kính: Trong / Mờ / Khói / Mờ tối (dock, mini player, bảng bật lên, thẻ...) */}
+        <Text style={[styles.label, { color: text, marginTop: 18 }]}>{t('studio.material')}</Text>
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+          {(['clear', 'frost', 'smoke', 'matte', 'neon'] as const).map((m) => {
+            const on = (theme.glass.material ?? 'clear') === m;
+            return (
+              <Pressable
+                key={m}
+                onPress={() => {
+                  setGlassMaterial(m);
+                  // Mờ tối: mặc định bản MỎNG (nhoè nhẹ, trong) — kéo thanh Độ mờ kính sang phải để dày / đặc hơn
+                  if (m === 'matte' && (theme.glass.material ?? 'clear') !== 'matte') setGlassBlur(15);
+                }}
+                style={{ flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 14, borderCurve: 'continuous', backgroundColor: on ? accent : theme.colors.surface }}
+              >
+                <Text style={{ color: on ? theme.colors.onAccent : text, fontWeight: '700' }}>{t(`studio.material.${m}` as const)}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        {/* Neon: chọn màu đèn (ô đầu = màu nhấn của theme). Mỗi ô tự phát sáng đúng màu của nó */}
+        {theme.glass.material === 'neon' && (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 14 }}>
+            {NEON_COLORS.map((c) => {
+              const col = c || accent;
+              const on = (theme.glass.neon ?? '') === c;
+              return (
+                <Pressable
+                  key={c || 'auto'}
+                  onPress={() => setGlassNeon(c)}
+                  hitSlop={6}
+                  accessibilityLabel={c || t('studio.neon.auto')}
+                  style={{
+                    width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center',
+                    backgroundColor: 'rgba(8,8,20,0.6)', borderWidth: on ? 2 : 1, borderColor: col,
+                    boxShadow: `0px 0px ${on ? 14 : 7}px ${col}`,
+                  }}
+                >
+                  {c === '' ? <Text style={{ color: col, fontSize: 11, fontWeight: '800' }}>A</Text> : <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: col, boxShadow: `0px 0px 6px ${col}` }} />}
+                </Pressable>
+              );
+            })}
+          </View>
         )}
 
         {/* Kính mờ */}
@@ -278,3 +446,25 @@ const styles = StyleSheet.create({
   label: { fontSize: 15, fontWeight: '700' },
   switchRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 18 },
 });
+
+// Ô chọn dải màu khói: chấm tròn tô chuyển màu của dải (Theo ảnh bìa: ba màu mẫu), vòng màu nhấn hiện / tắt êm khi chọn
+const rgbHex = (c: number[]) => '#' + c.map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
+function ToneChip({ tone, label, on, ring, text, dim, onPress }: { tone: SmokeTone; label: string; on: boolean; ring: string; text: string; dim: string; onPress: () => void }) {
+  const colors: [string, string, string] =
+    tone === 'cover' ? ['#E2574C', '#F2B134', '#3E8EDE'] : [rgbHex(SMOKE_COLORS[tone].c[3]), rgbHex(SMOKE_COLORS[tone].c[1]), rgbHex(SMOKE_COLORS[tone].c[2])];
+  const ringStyle = useAnimatedStyle(() => ({
+    opacity: withTiming(on ? 1 : 0, { duration: 180 }),
+    transform: [{ scale: withTiming(on ? 1 : 0.86, { duration: 220 }) }],
+  }));
+  return (
+    <Pressable onPress={onPress} hitSlop={4} style={({ pressed }) => ({ width: 58, alignItems: 'center', transform: [{ scale: pressed ? 0.94 : 1 }] })}>
+      <View style={{ width: 48, height: 48, alignItems: 'center', justifyContent: 'center' }}>
+        <Animated.View style={[StyleSheet.absoluteFill, { borderRadius: 24, borderWidth: 2, borderColor: ring }, ringStyle]} />
+        <LinearGradient colors={colors} start={{ x: 0, y: 1 }} end={{ x: 1, y: 0 }} style={{ width: 38, height: 38, borderRadius: 19 }} />
+      </View>
+      <Text numberOfLines={1} style={{ color: on ? text : dim, fontSize: 11, fontWeight: on ? '700' : '500', marginTop: 4 }}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}

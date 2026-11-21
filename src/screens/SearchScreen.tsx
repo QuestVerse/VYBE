@@ -1,13 +1,40 @@
+import { SplitPane } from '../components/SplitPane';
+import { useRotateEnter } from '../components/rotateEnter';
+import { onSearchFocusRequest } from './searchFocus';
+import { useRenderProbe } from '../components/JankMonitor';
+import { ScalePressable } from '../components/PressScale';
+import { Stagger } from '../components/Stagger';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Keyboard, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, Keyboard, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import RAnimated, { Easing as REasing, FadeInDown, FadeInUp, FadeOutDown, FadeOutUp, useAnimatedScrollHandler, useSharedValue as useRShared } from 'react-native-reanimated';
+import { useDockCollapse } from '../components/dockCollapse';
+import { BlurView } from 'expo-blur';
+import { useGlass, GlassFill, glassShadow } from '../components/Glass';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeProvider';
-import { usePlayer } from '../player/PlayerProvider';
+import { usePlayerPick } from '../player/PlayerProvider';
 import { useContentInsets } from '../components/FloatingDock';
 import { genres, type Track } from '../data/mock';
 import { useLibrary, type LibraryEntry } from '../data/library';
 import { musicSupported, toTrack, ytmusic } from '../music/lazy';
-import type { Card, SearchKind, SearchResults, SuggestItem, Suggestions } from '../music/ytmusic';
+import type { Card, GenreGroup, SearchKind, SearchResults, SuggestItem, Suggestions } from '../music/ytmusic';
+import { cacheGet, cacheSet, kvGet, kvSet, useDbVersion } from '../data/db';
+import { searchUsers, UserRow } from '../data/community';
+
+// Lịch sử tìm kiếm: các từ khoá gần đây (mới nhất trước), hiện khi bấm vào ô tìm kiếm còn trống
+const HISTORY = 'search:history';
+const EASE_OUT = REasing.bezier(0.23, 1, 0.32, 1);
+const EASE_IN_OUT = REasing.bezier(0.77, 0, 0.175, 1);
+const HISTORY_MAX = 12;
+const addHistory = (q: string) => {
+  const v = q.trim();
+  if (!v) return;
+  const list = (kvGet<string[]>(HISTORY) ?? []).filter((x) => x.toLowerCase() !== v.toLowerCase());
+  kvSet(HISTORY, [v, ...list].slice(0, HISTORY_MAX));
+};
+const removeHistory = (q: string) => kvSet(HISTORY, (kvGet<string[]>(HISTORY) ?? []).filter((x) => x !== q));
+import { warmGenres } from '../music/genreCache';
 import { useFrame } from '../components/layout';
 import { useSongMenu } from '../components/useSongMenu';
 import { useNav } from '../nav/Nav';
@@ -19,7 +46,49 @@ const SUGGEST_DELAY = 120; // ms sau lần gõ cuối thì lấy gợi ý
 const PREFETCH_DELAY = 450; // ms ngừng gõ thì tải sẵn kết quả đầy đủ, để bấm Search là hiện ngay
 const CACHE_MAX = 60;
 
-const KINDS: SearchKind[] = ['all', 'song', 'album', 'artist'];
+// Độ dài kiểu YouTube: 3:25, 1:02:15
+const fmtLong = (sec: number) => {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s2 = `${Math.floor(sec % 60)}`.padStart(2, '0');
+  return h ? `${h}:${`${m}`.padStart(2, '0')}:${s2}` : `${m}:${s2}`;
+};
+const KINDS: SearchKind[] = ['all', 'song', 'album', 'artist', 'youtube'];
+
+// Thể loại & tâm trạng thật của YouTube Music (lưu lại trên máy, mỗi ngày làm mới một lần)
+const GENRES_KEY = 'genres:v1';
+const GENRES_TTL = 24 * 3600 * 1000;
+function useGenres() {
+  const [groups, setGroups] = useState<GenreGroup[] | null>(() => cacheGet<GenreGroup[]>(GENRES_KEY)?.value ?? null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (!musicSupported) return setFailed(true);
+    const c = cacheGet<GenreGroup[]>(GENRES_KEY);
+    if (c && Date.now() - c.at < GENRES_TTL) return;
+    let dead = false;
+    ytmusic()
+      .getGenres()
+      .then((g) => {
+        if (dead) return;
+        setGroups(g);
+        cacheSet(GENRES_KEY, g);
+      })
+      .catch((e) => {
+        console.warn('[genres]', e);
+        if (!dead) setFailed(true);
+      });
+    return () => {
+      dead = true;
+    };
+  }, []);
+  // Tải sẵn trang của vài thể loại đầu mỗi nhóm (chạy ngầm, từng cái một) để bấm vào là hiện ngay
+  useEffect(() => {
+    if (!groups) return;
+    const id = setTimeout(() => warmGenres(groups.flatMap((g) => g.items.slice(0, 4).map((i) => i.params))), 1500);
+    return () => clearTimeout(id);
+  }, [groups]);
+  return { groups, failed };
+}
 
 // ---------- Bộ nhớ đệm dùng chung cho cả app (sống tới khi tắt app) ----------
 // Lưu Promise thay vì kết quả: gõ lại đúng chữ đang chờ thì dùng chung request, không gửi thêm.
@@ -56,17 +125,28 @@ function warmUp() {
 }
 
 export function SearchScreen() {
-  const { theme } = useTheme();
+  // dock ZYX: chạm thanh "Search" → sang đây và bật bàn phím
+  const inputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
+  useEffect(() => onSearchFocusRequest(() => inputRef.current?.focus()), []);
+  // dock Apple Music: cuộn xuống thì thu dock, cuộn lên thì mở lại
+  const searchY = useRShared(0);
+  const dockScroll = useAnimatedScrollHandler((e) => {
+    searchY.value = e.contentOffset.y;
+  });
+  useDockCollapse(searchY);
+  const { theme, landscape } = useTheme();
+  const rotEnter = useRotateEnter();
   useEffect(() => {
     const id = setTimeout(warmUp, 250); // để màn hình Tìm kiếm hiện ra trước rồi mới làm
     return () => clearTimeout(id);
   }, []);
-  const { track, playTrack } = usePlayer();
+  const { track, playTrack } = usePlayerPick('track', 'playTrack');
   const tr = useT(); // chữ theo ngôn ngữ (đặt tên tr vì biến t đang dùng cho bài hát)
   const songMenu = useSongMenu(); // nhấn giữ một bài: phát tiếp, hàng đợi, thích, thêm vào playlist
   const { push } = useNav();
   const pad = useContentInsets();
   const { width } = useFrame();
+  const genreList = useGenres();
 
   const [query, setQuery] = useState('');
   // 'typing': đang gõ, hiện gợi ý. 'results': đã bấm Search hoặc chọn một gợi ý, hiện kết quả đầy đủ.
@@ -78,6 +158,17 @@ export function SearchScreen() {
   const [resultsFor, setResultsFor] = useState<string | null>(null); // kết quả đang hiện là của từ khoá + loại nào ("all:abc")
   const [resultsBusy, setResultsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Mục "Người dùng": chỉ tìm người dùng khi bấm vào mục này
+  const [userMode, setUserMode] = useState(false);
+  const [users, setUsers] = useState<UserRow[] | null>(null);
+  const [usersFor, setUsersFor] = useState<string | null>(null);
+  const [usersFailed, setUsersFailed] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const searchAnim = useRef(false);
+  const dbv = useDbVersion();
+  const history = useMemo(() => kvGet<string[]>(HISTORY) ?? [], [dbv]); // eslint-disable-line react-hooks/exhaustive-deps
+  // đo thời gian vẽ lại (vào trang + bật bàn phím từng làm luồng JS đứng 2,5 giây)
+  useRenderProbe('Tìm kiếm', { focused, query, mode, suggest, results, users, track, dbv, kind });
 
   // Từ khoá mới nhất: kết quả về muộn của từ khoá cũ thì bỏ qua.
   // Tách riêng cho gợi ý (lúc gõ) và kết quả (sau khi bấm Search): trước đây dùng chung một biến,
@@ -113,10 +204,17 @@ export function SearchScreen() {
     };
   }, [query, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const runSearch = (raw: string, k: SearchKind = kind) => {
+  // music = true: luôn tìm nhạc (bấm một mục nhạc khi đang ở mục Người dùng)
+  const runSearch = (raw: string, k0: SearchKind = kind, music = false) => {
     const q = raw.trim();
+    // Dán link YouTube: tìm thẳng video đó ở thẻ YouTube
+    const k: SearchKind = musicSupported && ytmusic().youtubeId(q) ? 'youtube' : k0;
     const key = `${k}:${q}`;
-    if (!q || !musicSupported) return;
+    if (!q) return;
+    if (userMode && !music) return runUsers(q); // đang ở mục Người dùng: bấm Tìm là tìm người dùng
+    if (!musicSupported) return;
+    setUserMode(false);
+    addHistory(q);
     Keyboard.dismiss(); // đã chọn xong từ khoá thì cất bàn phím đi để thấy hết danh sách
     latestSearch.current = key;
     setQuery(q);
@@ -138,6 +236,27 @@ export function SearchScreen() {
       });
   };
 
+  const runUsers = (raw: string) => {
+    const q = raw.trim();
+    if (!q) return;
+    Keyboard.dismiss();
+    addHistory(q);
+    setQuery(q);
+    setUserMode(true);
+    setMode('results');
+    setUsersFailed(false);
+    latestSearch.current = `users:${q}`;
+    searchUsers(q)
+      .then((l) => {
+        if (latestSearch.current !== `users:${q}`) return;
+        setUsers(l);
+        setUsersFor(q);
+      })
+      .catch(() => {
+        if (latestSearch.current === `users:${q}`) setUsersFailed(true);
+      });
+  };
+
   const onChangeText = (t: string) => {
     setQuery(t);
     setMode('typing');
@@ -154,6 +273,9 @@ export function SearchScreen() {
     setResultsFor(null);
     setKind('all');
     setError(null);
+    setUserMode(false);
+    setUsers(null);
+    setUsersFor(null);
   };
 
   // Bấm vào một gợi ý: bài hát thì phát luôn, album/playlist/nghệ sĩ thì mở trang của nó
@@ -177,9 +299,16 @@ export function SearchScreen() {
   };
 
   const { text, textSecondary, accent } = theme.colors;
-  const innerW = width - H_PAD * 2;
-  const cols = Math.max(2, Math.floor(innerW / 180));
-  const tileW = (innerW - GAP * (cols - 1)) / cols;
+  const glass = useGlass();
+  // Màn hình ngang: thể loại nằm ở cột phải (khoảng 58% bề rộng)
+  // Màn hình ngang: thể loại nằm ở cột phải của SplitPane (58% phần còn lại sau khe 8px), trừ lề 2 bên.
+  // Tính đúng từng điểm ảnh (trước đây tính dư vài điểm nên ô thứ hai bị đẩy xuống dòng → chỉ còn 1 cột)
+  // Màn hình ngang: đo bề rộng thật của cột phải rồi chia ô theo đó (tính ước lượng dễ lệch vài điểm → ô thứ hai rớt dòng)
+  const [rightW, setRightW] = useState(0);
+  const innerW = landscape && rightW > 0 ? Math.floor(rightW) - 1 : Math.floor((landscape ? (width - 8) * 0.64 : width) - H_PAD * 2) - 1;
+  const cols = landscape ? Math.max(2, Math.floor(innerW / 200)) : Math.max(2, Math.floor(innerW / 180));
+  const tileW = Math.floor((innerW - GAP * (cols - 1)) / cols);
+  const tileH = landscape ? 78 : 96;
 
   // Mục trong Thư viện khớp từ khoá (hiện ở cuối khi xem Tất cả)
   const library = useLibrary();
@@ -212,58 +341,107 @@ export function SearchScreen() {
     playlist: tr('kind.playlist'),
   };
 
-  return (
-    <ScrollView
-      bounces={false}
-      overScrollMode="never"
-      keyboardShouldPersistTaps="handled"
-      keyboardDismissMode="on-drag"
-      contentContainerStyle={{ paddingBottom: pad.bottom + pad.endPadding }}
-    >
-      <View style={{ width: '100%', paddingHorizontal: H_PAD }}>
-        <Text style={{ color: text, fontSize: 26, fontWeight: '700', marginTop: pad.top + 16 }}>{tr('search.title')}</Text>
+  // Kết quả hàng đầu: thẻ lớn
+  const renderTop = (top: Card, playable: Track[]) => (
+                    <Pressable
+                      onPress={() => (top.song ? playTrack(toTrack(top.song), [toTrack(top.song), ...playable]) : openCard(top))}
+                      onLongPress={top.song ? () => songMenu(toTrack(top.song!)) : undefined}
+                      style={[styles.topCard, { backgroundColor: theme.colors.surface }]}
+                    >
+                      {top.thumb ? (
+                        <Image source={{ uri: top.thumb }} style={{ width: 84, height: 84, borderRadius: top.kind === 'artist' ? 42 : 6 }} />
+                      ) : (
+                        <View style={{ width: 84, height: 84, borderRadius: 6, backgroundColor: theme.colors.skeleton }} />
+                      )}
+                      <View style={{ flex: 1 }}>
+                        <Text numberOfLines={2} style={{ color: top.song?.id === track.id ? accent : text, fontSize: 20, fontWeight: '800' }}>{top.title}</Text>
+                        <Text numberOfLines={1} style={{ color: textSecondary, fontSize: 13, marginTop: 4 }}>{top.subtitle}</Text>
+                      </View>
+                      {top.song && (
+                        <View style={[styles.topPlay, { backgroundColor: accent }]}>
+                          <Ionicons name="play" size={20} color={theme.colors.onAccent} style={{ marginLeft: 2 }} />
+                        </View>
+                      )}
+                    </Pressable>
+                  );
 
-        {/* Ô tìm kiếm kiểu Spotify */}
-        <View style={[styles.searchBox, { backgroundColor: text }]}>
-          <Ionicons name="search" size={20} color={theme.background.color} />
+  const searchBox = (
+    <>
+        {/* Ô tìm kiếm: kính mờ, viền màu nhấn của theme, chữ theo màu theme (hợp với mọi nền: trời sao, hoa rơi, ảnh...) */}
+        <View style={[styles.searchBox, glassShadow(0.6, theme.colors.glassTint !== 'dark')]}>
+          {/* tấm kính + viền màu nhấn của theme */}
+          <GlassFill radius={16} solid={0.3} slab />
+          <View pointerEvents="none" style={[StyleSheet.absoluteFill, { borderRadius: 16, borderCurve: 'continuous', borderWidth: 1.4, borderColor: focused ? accent : accent.slice(0, 7) + '88' }]} />
+          <Ionicons name="search" size={20} color={text} />
           <TextInput
+            ref={inputRef}
             value={query}
             onChangeText={onChangeText}
-            onSubmitEditing={() => runSearch(query)}
+            onSubmitEditing={() => (userMode ? runUsers(query) : runSearch(query))}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
             returnKeyType="search"
             autoCorrect={false}
             autoCapitalize="none"
             placeholder={tr('search.placeholder')}
-            placeholderTextColor={theme.background.color + '99'}
-            style={[styles.input, { color: theme.background.color }]}
+            placeholderTextColor={textSecondary}
+            selectionColor={accent}
+            style={[styles.input, { color: text }]}
           />
-          {(suggestBusy || resultsBusy) && searching && <ActivityIndicator size="small" color={theme.background.color} />}
+          {(suggestBusy || resultsBusy) && searching && <ActivityIndicator size="small" color={text} />}
           {searching && (
             <Pressable onPress={clear} hitSlop={8}>
-              <Ionicons name="close" size={20} color={theme.background.color} />
+              <Ionicons name="close" size={20} color={text} />
             </Pressable>
           )}
         </View>
 
-        {!searching ? (
+    </>
+  );
+  const browse = (
+    <>
           <>
-            <Text style={{ color: text, fontSize: 18, fontWeight: '700', marginTop: 28, marginBottom: 14 }}>
-              {tr('search.browseAll')}
-            </Text>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: GAP }}>
-              {genres.map((g) => (
-                <Pressable
-                  key={g.id}
-                  onPress={() => runSearch(g.title)}
-                  style={[styles.tile, { width: tileW, backgroundColor: g.color }]}
-                >
-                  <Text style={styles.tileTitle}>{g.title}</Text>
-                  <View style={styles.tileDeco} />
-                </Pressable>
-              ))}
-            </View>
+            {/* Thể loại & tâm trạng của YouTube Music: bấm vào mở trang thể loại (các playlist đúng thể loại đó) */}
+            {genreList.groups ? (
+              genreList.groups.map((grp, gi) => (
+                <View key={`${gi}:${grp.title}`}>
+                  <Text style={{ color: text, fontSize: 18, fontWeight: '700', marginTop: 28, marginBottom: 14 }}>
+                    {grp.title || tr('search.browseAll')}
+                  </Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: GAP }}>
+                    {grp.items.map((g) => (
+                      <GenreTile
+                        key={g.params}
+                        title={g.title}
+                        color={g.color}
+                        width={tileW}
+                        height={tileH}
+                        onPress={() => push({ type: 'genre', title: g.title, params: g.params, color: g.color })}
+                      />
+                    ))}
+                  </View>
+                </View>
+              ))
+            ) : genreList.failed ? (
+              // Không tải được (mất mạng...): ô cố định, bấm vào thì tìm theo tên
+              <>
+                <Text style={{ color: text, fontSize: 18, fontWeight: '700', marginTop: 28, marginBottom: 14 }}>{tr('search.browseAll')}</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: GAP }}>
+                  {genres.map((g) => (
+                    <GenreTile key={g.id} title={g.title} color={g.color} width={tileW} height={tileH} onPress={() => runSearch(g.title)} />
+                  ))}
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={{ color: text, fontSize: 18, fontWeight: '700', marginTop: 28, marginBottom: 14 }}>{tr('search.browseAll')}</Text>
+                <ActivityIndicator color={textSecondary} style={{ marginTop: 12 }} />
+              </>
+            )}
           </>
-        ) : !showResults ? (
+    </>
+  );
+  const suggestions = (
           // ---------- Đang gõ: gợi ý ----------
           <View style={{ marginTop: 12 }}>
             {!musicSupported && <Text style={{ color: textSecondary }}>{tr('search.phoneOnly')}</Text>}
@@ -302,23 +480,108 @@ export function SearchScreen() {
                     {it.subtitle ? ` • ${it.subtitle}` : ''}
                   </Text>
                 </View>
+                {it.song && (
+                  <Pressable onPress={() => songMenu(toTrack(it.song!))} hitSlop={12} style={{ paddingLeft: 6 }}>
+                    <Ionicons name="ellipsis-horizontal" size={20} color={textSecondary} />
+                  </Pressable>
+                )}
               </Pressable>
             ))}
           </View>
-        ) : (
-          // ---------- Đã bấm Search: kết quả đầy đủ, lọc theo loại ----------
-          <View style={{ marginTop: 14, gap: 4 }}>
-            <ScrollView horizontal bounces={false} overScrollMode="never" showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 10 }}>
-              {KINDS.map((k) => (
-                <Pressable
-                  key={k}
-                  onPress={() => k !== kind && runSearch(query, k)}
-                  style={[styles.chip, { backgroundColor: k === kind ? accent : theme.colors.surface }]}
-                >
-                  <Text style={{ color: k === kind ? theme.colors.onAccent : text, fontWeight: '700', fontSize: 13 }}>{tr(`search.filter.${k}`)}</Text>
-                </Pressable>
-              ))}
+  );
+  const chipRow = (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 10 }}>
+              {KINDS.map((k) => {
+                const on = !userMode && k === kind;
+                return (
+                  <Pressable
+                    key={k}
+                    onPress={() => {
+                      if (on) return;
+                      setUserMode(false);
+                      runSearch(query, k, true);
+                    }}
+                    style={[styles.chip, { backgroundColor: on ? accent : theme.colors.surface }]}
+                  >
+                    <Text style={{ color: on ? theme.colors.onAccent : text, fontWeight: '700', fontSize: 13 }}>{tr(`search.filter.${k}`)}</Text>
+                  </Pressable>
+                );
+              })}
+              {/* Người dùng: chỉ khi bấm vào mục này mới tìm các tài khoản khớp với từ khoá */}
+              <Pressable onPress={() => !userMode && runUsers(query)} style={[styles.chip, { backgroundColor: userMode ? accent : theme.colors.surface }]}>
+                <Text style={{ color: userMode ? theme.colors.onAccent : text, fontWeight: '700', fontSize: 13 }}>{tr('search.filter.users')}</Text>
+              </Pressable>
             </ScrollView>
+  );
+  // Kết quả mục Người dùng: avatar, Tên#tag, số người theo dõi. Bấm vào để mở hồ sơ
+  const usersBody = (
+    <View style={{ marginTop: 6 }}>
+      <Text style={{ color: textSecondary, fontSize: 13, marginBottom: 6 }}>{tr('community.searchHint')}</Text>
+      {usersFailed ? (
+        <Pressable onPress={() => runUsers(query)}>
+          <Text style={{ color: textSecondary }}>{tr('community.loadFailed')}</Text>
+        </Pressable>
+      ) : usersFor !== query.trim() || !users ? (
+        <ActivityIndicator color={accent} style={{ marginTop: 20 }} />
+      ) : users.length === 0 ? (
+        <Text style={{ color: textSecondary, marginTop: 10 }}>{tr('community.noUsers')}</Text>
+      ) : (
+        users.map((u) => (
+          <Pressable key={u.id} onPress={() => push({ type: 'user', id: u.id })} style={({ pressed }) => [styles.row, pressed && { opacity: 0.6 }]}>
+            <View style={[styles.cover, { borderRadius: 28, backgroundColor: u.color, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }]}>
+              {u.avatar ? <Image source={{ uri: u.avatar }} style={StyleSheet.absoluteFill} /> : <Text style={{ color: '#fff', fontWeight: '800', fontSize: 20 }}>{u.name.slice(0, 1).toUpperCase()}</Text>}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text numberOfLines={1} style={{ color: text, fontSize: 16, fontWeight: '700' }}>
+                {u.name}
+                <Text style={{ color: textSecondary, fontWeight: '500' }}>{u.tag ? ` #${u.tag}` : ''}</Text>
+              </Text>
+              <Text numberOfLines={1} style={{ color: textSecondary, fontSize: 13, marginTop: 2 }}>
+                {u.followers} {tr('community.followers')}
+              </Text>
+            </View>
+          </Pressable>
+        ))
+      )}
+    </View>
+  );
+
+  // Lịch sử tìm kiếm (bấm vào ô tìm kiếm còn trống)
+  const historyList = (
+    <View style={{ marginTop: 22 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+        <Text style={{ flex: 1, color: text, fontSize: 18, fontWeight: '700' }}>{tr('search.recent')}</Text>
+        <Pressable onPress={() => kvSet(HISTORY, [])} hitSlop={8}>
+          <Text style={{ color: accent, fontWeight: '700', fontSize: 14 }}>{tr('search.clearHistory')}</Text>
+        </Pressable>
+      </View>
+      {history.map((h, i) => (
+        // từng dòng lịch sử trượt xuống từ ô tìm kiếm, nối đuôi nhau (dòng sau trễ hơn dòng trước một chút)
+        <RAnimated.View key={h} entering={searchAnim.current ? FadeInDown.duration(240).delay(70 + Math.min(i, 8) * 28).easing(EASE_OUT) : undefined}>
+        <Pressable onPress={() => runSearch(h)} style={({ pressed }) => [{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11 }, pressed && { opacity: 0.6 }]}>
+          <Ionicons name="time-outline" size={20} color={textSecondary} />
+          <Text numberOfLines={1} style={{ flex: 1, color: text, fontSize: 16 }}>{h}</Text>
+          <Pressable onPress={() => removeHistory(h)} hitSlop={10}>
+            <Ionicons name="close" size={18} color={textSecondary} />
+          </Pressable>
+        </Pressable>
+        </RAnimated.View>
+      ))}
+    </View>
+  );
+  const showHistory = focused && !searching && history.length > 0;
+  // Chạm ô tìm kiếm (hoặc nút Tìm kiếm trên dock): mục "Duyệt tất cả" trượt xuống biến mất, lịch sử trượt xuống từ ô tìm kiếm.
+  // Chạm chỗ trống: lịch sử trượt ngược lên chui vào ô tìm kiếm, "Duyệt tất cả" trượt lên lại.
+  // Chỉ bật hiệu ứng sau lần chạm ô tìm kiếm đầu tiên (không chạy lúc trang vừa dựng)
+  if (focused) searchAnim.current = true;
+  const blurSearch = () => {
+    if (focused) inputRef.current?.blur();
+  };
+
+  const musicBody = (
+    <>
+          {/* ---------- Đã bấm Search: kết quả đầy đủ, lọc theo loại ---------- */}
+          <View style={{ marginTop: 14, gap: 4 }}>
             {error && <Text style={{ color: textSecondary }}>{tr('search.error', { msg: error })}</Text>}
             {!resultsReady && !error &&
               // Khung chờ: giữ chỗ đúng hình dạng kết quả để màn hình không bị trống
@@ -331,7 +594,29 @@ export function SearchScreen() {
                   </View>
                 </View>
               ))}
-            {resultsReady && results && (() => {
+            {resultsReady && results && kind === 'youtube' && (() => {
+              // Thẻ YouTube: video thường (mix, remix tổng hợp...). Phát chỉ lấy tiếng + ảnh, không lấy hình
+              const vids = results.videos.map(toTrack);
+              if (!vids.length) return <Text style={{ color: textSecondary }}>{tr('search.nothing', { q: query.trim() })}</Text>;
+              return vids.map((t, i) => (
+                <Stagger key={`ytv-${t.id}`} i={i}>
+                  <Pressable onPress={() => playTrack(t, vids)} onLongPress={() => songMenu(t)} style={styles.row}>
+                    <Image source={{ uri: t.thumb }} style={[styles.ytThumb, { backgroundColor: theme.colors.surface }]} />
+                    <View style={{ flex: 1 }}>
+                      <Text numberOfLines={2} style={{ color: t.id === track.id ? accent : text, fontSize: 15, fontWeight: '600' }}>{t.title}</Text>
+                      <Text numberOfLines={1} style={{ color: textSecondary, fontSize: 13, marginTop: 2 }}>
+                        {t.duration ? `${fmtLong(t.duration)} • ` : ''}
+                        {t.artist}
+                      </Text>
+                    </View>
+                    <Pressable onPress={() => songMenu(t)} hitSlop={12} style={{ paddingLeft: 6 }}>
+                      <Ionicons name="ellipsis-horizontal" size={20} color={textSecondary} />
+                    </Pressable>
+                  </Pressable>
+                </Stagger>
+              ));
+            })()}
+            {resultsReady && results && kind !== 'youtube' && (() => {
               const all = kind === 'all';
               // Tất cả: vài nghệ sĩ, vài bài, vài album. Lọc theo loại: chỉ loại đó, hiện hết
               const withSongs = kind === 'all' || kind === 'song';
@@ -362,6 +647,10 @@ export function SearchScreen() {
                       {label} • {t.artist}
                     </Text>
                   </View>
+                  {/* Nút ... : mở bảng thao tác của bài */}
+                  <Pressable onPress={() => songMenu(t)} hitSlop={12} style={{ paddingLeft: 6 }}>
+                    <Ionicons name="ellipsis-horizontal" size={20} color={textSecondary} />
+                  </Pressable>
                 </Pressable>
               );
               const cardRow = (c: Card) => (
@@ -385,33 +674,15 @@ export function SearchScreen() {
               );
               return (
                 <>
-                  {/* Kết quả hàng đầu: thẻ lớn */}
-                  {top && (
-                    <Pressable
-                      onPress={() => (top.song ? playTrack(toTrack(top.song), [toTrack(top.song), ...playable]) : openCard(top))}
-                      onLongPress={top.song ? () => songMenu(toTrack(top.song!)) : undefined}
-                      style={[styles.topCard, { backgroundColor: theme.colors.surface }]}
-                    >
-                      {top.thumb ? (
-                        <Image source={{ uri: top.thumb }} style={{ width: 84, height: 84, borderRadius: top.kind === 'artist' ? 42 : 6 }} />
-                      ) : (
-                        <View style={{ width: 84, height: 84, borderRadius: 6, backgroundColor: theme.colors.skeleton }} />
-                      )}
-                      <View style={{ flex: 1 }}>
-                        <Text numberOfLines={2} style={{ color: top.song?.id === track.id ? accent : text, fontSize: 20, fontWeight: '800' }}>{top.title}</Text>
-                        <Text numberOfLines={1} style={{ color: textSecondary, fontSize: 13, marginTop: 4 }}>{top.subtitle}</Text>
-                      </View>
-                      {top.song && (
-                        <View style={[styles.topPlay, { backgroundColor: accent }]}>
-                          <Ionicons name="play" size={20} color={theme.colors.onAccent} style={{ marginLeft: 2 }} />
-                        </View>
-                      )}
-                    </Pressable>
-                  )}
+                  {!landscape && top && renderTop(top, playable)}
                   {artists.length > 0 && head(tr('search.filter.artist'))}
                   {artists.map(cardRow)}
                   {songs.length > 0 && head(tr('search.filter.song'))}
-                  {songs.map((t) => songRow(t, tr('kind.song')))}
+                  {songs.map((t, i) => (
+                    <Stagger key={`st-${t.id}`} i={i}>
+                      {songRow(t, tr('kind.song'))}
+                    </Stagger>
+                  ))}
                   {videos.length > 0 && head(tr('kind.video'), true)}
                   {videos.map((t) => songRow(t, tr('kind.video')))}
                   {albums.length > 0 && head(tr('search.filter.album'))}
@@ -438,24 +709,158 @@ export function SearchScreen() {
               );
             })()}
           </View>
+    </>
+  );
+
+  const resultsBody = userMode ? usersBody : musicBody;
+
+  // Màn hình ngang: trái = tiêu đề + ô tìm kiếm (+ các mục lọc Tất cả / Bài hát... và kết quả hàng đầu khi đã tìm),
+  // phải = phần còn lại (thể loại, gợi ý khi đang gõ, danh sách kết quả). Mỗi bên cuộn riêng
+  if (landscape) {
+    const topCard = !userMode && showResults && resultsReady && results && kind === 'all' && results.top
+      ? renderTop(results.top, [...results.songs, ...results.videos].map(toTrack))
+      : null;
+    return (
+      <SplitPane
+        ratio={0.36}
+        topExtra={16}
+        left={
+          <>
+        <Text style={{ color: text, fontSize: 26, fontWeight: '700', marginTop: 0 }}>{tr('search.title')}</Text>
+            {searchBox}
+            {showResults && <View style={{ marginTop: 14 }}>{chipRow}</View>}
+            {topCard && <View style={{ marginTop: 6 }}>{topCard}</View>}
+          </>
+        }
+        right={
+          showHistory ? <View style={{ marginTop: -22 }}>{historyList}</View> : !searching ? <View style={{ marginTop: -28 }} onLayout={(e) => setRightW(e.nativeEvent.layout.width)}>{browse}</View> : !showResults ? <View style={{ marginTop: -12 }}>{suggestions}</View> : <View style={{ gap: 4 }}>{resultsBody}</View>
+        }
+      />
+    );
+  }
+
+  return (
+    <RAnimated.ScrollView
+      onScroll={dockScroll}
+      scrollEventThrottle={16}
+      showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
+      contentContainerStyle={{ paddingBottom: pad.bottom + pad.endPadding }}
+    >
+      {/* vừa xoay về dọc: trượt từ dưới lên vào chỗ (rotateEnter.ts) */}
+      <RAnimated.View entering={rotEnter(0, 'up')} style={{ width: '100%', paddingHorizontal: H_PAD }}>
+        <Text style={{ color: text, fontSize: 26, fontWeight: '700', marginTop: pad.top + 16 }}>{tr('search.title')}</Text>
+
+        {searchBox}
+
+        {/* chạm vào chỗ trống bên dưới ô tìm kiếm → thôi tìm (cất bàn phím, lịch sử thu lại) */}
+        <Pressable onPress={blurSearch} accessible={false} style={{ minHeight: 400 }}>
+        {showHistory ? (
+          <RAnimated.View
+            key="history"
+            entering={searchAnim.current ? FadeInDown.duration(240).delay(60).easing(EASE_OUT) : undefined}
+            exiting={FadeOutUp.duration(190).easing(EASE_IN_OUT)}
+          >
+            {historyList}
+          </RAnimated.View>
+        ) : !searching ? (
+          <RAnimated.View
+            key="browse"
+            entering={searchAnim.current ? FadeInUp.duration(300).delay(110).easing(EASE_OUT) : undefined}
+            exiting={FadeOutDown.duration(200).easing(EASE_IN_OUT)}
+          >
+            {browse}
+          </RAnimated.View>
+        ) : !showResults ? suggestions : (
+          <View style={{ marginTop: 14, gap: 4 }}>
+            {chipRow}
+            {resultsBody}
+          </View>
         )}
-      </View>
-    </ScrollView>
+        </Pressable>
+      </RAnimated.View>
+    </RAnimated.ScrollView>
   );
 }
 
+// Biểu tượng cho ô thể loại theo tên (tiếng Anh / Việt); không khớp thì dùng nốt nhạc
+const GENRE_ICONS: [RegExp, React.ComponentProps<typeof Ionicons>['name']][] = [
+  [/sleep|ngủ/i, 'bed'],
+  [/chill|relax|thư giãn/i, 'moon'],
+  [/commute|đi lại|đường/i, 'bus'],
+  [/energ|năng lượng/i, 'flash'],
+  [/feel good|vui|happy/i, 'happy'],
+  [/focus|tập trung|study|học/i, 'locate'],
+  [/gaming|game|chơi/i, 'game-controller'],
+  [/party|tiệc/i, 'sparkles'],
+  [/romance|love|lãng mạn|tình/i, 'heart'],
+  [/sad|buồn/i, 'rainy'],
+  [/workout|fitness|tập luyện|thể dục/i, 'barbell'],
+  [/rock|metal/i, 'flame'],
+  [/jazz|blues|soul/i, 'musical-note'],
+  [/classical|cổ điển/i, 'library'],
+  [/hip.?hop|rap/i, 'mic'],
+  [/dance|electronic|edm/i, 'pulse'],
+  [/country|folk|dân ca/i, 'leaf'],
+  [/kids|family|trẻ em/i, 'balloon'],
+  [/k-?pop|j-?pop|pop/i, 'star'],
+];
+const iconFor = (title: string) => GENRE_ICONS.find(([re]) => re.test(title))?.[1] ?? 'musical-notes';
+const rgbOf = (hex: string) => {
+  const h = hex.replace('#', '');
+  const n = parseInt(h.length === 3 ? h.split('').map((c) => c + c).join('') : h.slice(0, 6), 16);
+  return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
+};
+
+// Ô thể loại kiểu "kính màu": kính pha màu thể loại (độ trong theo thanh "Độ mờ kính", vẫn giữ đủ màu để nhận ra),
+// viền sáng cùng màu, biểu tượng phát sáng ở góc
+function GenreTile({ title, color, width, height, onPress }: { title: string; color: string; width: number; height: number; onPress: () => void }) {
+  const { theme } = useTheme();
+  const glass = useGlass();
+  const rgb = rgbOf(color);
+  const dark = theme.colors.glassTint === 'dark';
+  return (
+    <ScalePressable onPress={onPress} style={[styles.tile, { width, height }, glassShadow(1, !dark)]}>
+      {/* tấm kính như dock (nổi trên nền, có bóng đổ), màu thể loại loang nhẹ từ góc trên trái thay vì phủ đặc
+          → vẫn thấy chất kính, nhận ra thể loại qua sắc màu + viền + biểu tượng */}
+      <GlassFill radius={TILE_R} solid={0.5} slab />
+      <View pointerEvents="none" style={[StyleSheet.absoluteFill, { borderRadius: TILE_R, borderCurve: 'continuous', overflow: 'hidden' }]}>
+        <LinearGradient
+          colors={[`rgba(${rgb},${glass.alpha(dark ? 0.42 : 0.5, dark ? 0.58 : 0.66).toFixed(2)})`, `rgba(${rgb},${dark ? 0.1 : 0.14})`, `rgba(${rgb},0)`]}
+          locations={[0, 0.55, 1]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFill}
+        />
+      </View>
+      <View pointerEvents="none" style={[StyleSheet.absoluteFill, { borderRadius: TILE_R, borderCurve: 'continuous', borderWidth: 1, borderColor: `rgba(${rgb},0.55)` }]} />
+      <Text numberOfLines={2} style={[styles.tileTitle, { color: dark ? '#FFFFFF' : theme.colors.text }]}>{title}</Text>
+      <Ionicons
+        name={iconFor(title)}
+        size={34}
+        color={dark ? `rgb(${rgb})` : '#FFFFFF'}
+        style={{ position: 'absolute', right: 12, bottom: 10, textShadowColor: `rgba(${rgb},0.9)`, textShadowRadius: 12 }}
+      />
+    </ScalePressable>
+  );
+}
+
+const TILE_R = 18;
 const styles = StyleSheet.create({
+  ytThumb: { width: 96, height: 54, borderRadius: 6 },
   searchBox: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     height: 48,
-    borderRadius: 8,
+    borderRadius: 16,
+    borderCurve: 'continuous',
     paddingHorizontal: 14,
     marginTop: 16,
   },
   input: { flex: 1, fontSize: 15, fontWeight: '500', paddingVertical: 0 },
-  tile: { height: 96, borderRadius: 8, padding: 12, overflow: 'hidden' },
+  tile: { height: 96, borderRadius: TILE_R, borderCurve: 'continuous', padding: 12 },
   tileTitle: { color: '#FFFFFF', fontSize: 17, fontWeight: '700' },
   tileDeco: {
     position: 'absolute',

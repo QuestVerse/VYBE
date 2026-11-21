@@ -52,7 +52,7 @@ export function ProfileEditSheet({
     if (visible) {
       setMounted(true);
       show.setValue(0);
-      Animated.spring(show, { toValue: 1, friction: 7, tension: 70, useNativeDriver: USE_NATIVE }).start();
+      Animated.spring(show, { toValue: 1, friction: 7, tension: 70, overshootClamping: true, useNativeDriver: USE_NATIVE }).start();
     } else if (mounted) {
       Animated.timing(show, { toValue: 0, duration: 200, easing: Easing.in(Easing.cubic), useNativeDriver: USE_NATIVE }).start(({ finished }) => {
         if (finished) setMounted(false);
@@ -86,7 +86,7 @@ export function ProfileEditSheet({
             { marginBottom: Math.max(insets.bottom, 12) + 4, transform: [{ translateY }] },
           ]}
         >
-          <GlassFill radius={20} />
+          <GlassFill radius={24} solid={0.85} slab />
           <Text style={[styles.title, { color: text }]}>{t('profile.edit')}</Text>
 
           <View style={styles.row}>
@@ -135,7 +135,7 @@ export function ProfileEditSheet({
 }
 
 const styles = StyleSheet.create({
-  card: { marginHorizontal: 12, borderRadius: 20, padding: 16 },
+  card: { marginHorizontal: 12, borderRadius: 24, borderCurve: 'continuous', padding: 16, boxShadow: '0px 2px 4px rgba(0,0,0,0.35), 0px 14px 36px rgba(0,0,0,0.3)' },
   title: { fontSize: 17, fontWeight: '800', marginBottom: 14 },
   row: { flexDirection: 'row', gap: 10 },
   box: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, height: 48, justifyContent: 'center' },

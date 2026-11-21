@@ -9,25 +9,30 @@ export const defaultTheme: Theme = {
   followSystem: true, // người dùng mới: theo sáng/tối của điện thoại
   background: { type: 'preset', color: PRESETS.dark.bg, uri: '', dim: 0.25 },
   colors: PRESETS.dark,
-  glass: { blur: 40 },
-  effects: { ambient: { snow: true, green: true, ocean: true, latte: true } },
+  // Mọi trường tuỳ chọn (?:) trong Theme đều phải có giá trị ở đây: merge() khi mở app chỉ giữ các trường có trong bản mặc định
+  glass: { blur: 40, material: 'clear', neon: '' },
+  effects: { ambient: { snow: true, green: true, ocean: true, latte: true, sakura: true, meteor: true, starry: true, aurora: true, rain: true, neon: true, smoke: true }, meteorLevel: 1, smokeTone: 'coffee', smokeSpeed: 1 },
   dock: {
     position: 'bottom',
     items: ['home', 'search', 'library', 'settings'],
     labels: true,
+    rimLight: true,
+    mode: 'bar',
     style: { background: '#242424F2', radius: 28, margin: 12 },
   },
   miniPlayer: {
-    variant: 'pill',
     anchor: { edge: 'bottom', t: 0.5 },
     collapsed: false,
     merged: false,
     style: { background: '#242424F2', rectRadius: 18 },
   },
+  // look phải có sẵn ở đây: merge() chỉ giữ các trường có trong theme mặc định, thiếu là kiểu player đã chọn bị mất mỗi lần mở app
+  player: { lyricLook: 'glow', look: 'classic' },
   library: { layout: 'list', order: [] },
   home: {
-    sections: ['myPlaylists', 'recent', 'trending', 'recommended', 'playlistPicks'],
+    sections: ['myPlaylists', 'recent', 'feed', 'trending', 'recommended', 'playlistPicks'],
     hidden: [],
     trendingRange: 'week',
+    trendingRegion: 'ZZ',
   },
 };

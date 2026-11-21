@@ -1,9 +1,11 @@
-import { useWindowDimensions, ViewStyle } from 'react-native';import { EdgeInsets } from 'react-native-safe-area-context';
+import { ViewStyle } from 'react-native';
+import { EdgeInsets } from 'react-native-safe-area-context';
+import { useScreenSize } from './ScreenSize';
 import { Edge, MiniAnchor, Position, Theme } from '../theme/types';
 
-// Kích thước và vị trí của "khung điện thoại" trong cửa sổ
+// Kích thước và vị trí của "khung điện thoại" trong cửa sổ (đo thật, xem ScreenSize.tsx)
 export function useFrame() {
-  const { width, height } = useWindowDimensions();
+  const { width, height } = useScreenSize();
   return { width, height, left: 0 };
 }
 
@@ -14,10 +16,11 @@ export const DOCK_GAP = 2;
 export function dockCell(position: Position, labels: boolean) {
   const vertical = position !== 'top' && position !== 'bottom';
   if (vertical) return labels ? { main: 56, cross: 68 } : { main: 52, cross: 56 };
-  return labels ? { main: 76, cross: 56 } : { main: 68, cross: 50 };
+  // Nằm ngang: to ngang dock dọc, ô rộng như tab bar của Apple Music
+  return labels ? { main: 80, cross: 62 } : { main: 72, cross: 58 };
 }
 // Bề dày lớn nhất của dock (dùng để chừa chỗ cuối danh sách cuộn)
-export const DOCK_THICKNESS = 56 + DOCK_PADDING * 2;
+export const DOCK_THICKNESS = 68 + DOCK_PADDING * 2;
 
 export const MP_ALBUM = 44;
 export const MP_BUTTON = 40;

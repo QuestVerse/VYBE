@@ -1,5 +1,7 @@
 import React, { useEffect } from 'react';
-import { AppState, StyleSheet, View } from 'react-native';
+import Animated, { Easing, interpolateColor, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
+import { AppState, Platform, StyleSheet, View } from 'react-native';
 import { useTheme } from '../theme/ThemeProvider';
 
 // Nền chung của cả app, nằm sau mọi màn hình (trừ Player):
@@ -10,7 +12,7 @@ import { useTheme } from '../theme/ThemeProvider';
 export function AppBackground() {
   const { theme } = useTheme();
   const { type, uri, dim } = theme.background;
-  if (type === 'preset' || !uri) return null;
+  if (type === 'preset' || !uri) return theme.preset === 'cover' ? <CoverBackdrop /> : null;
   return (
     <View pointerEvents="none" style={StyleSheet.absoluteFill}>
       {type === 'video' ? <VideoBg uri={uri} /> : <ImageBg uri={uri} />}
@@ -46,4 +48,53 @@ function VideoBg({ uri }: { uri: string }) {
     return () => sub.remove();
   }, [player]);
   return <VideoView player={player} contentFit="cover" nativeControls={false} style={StyleSheet.absoluteFill} />;
+}
+
+// Bản sao đứng yên của nền chung, đặt bên trong trang đang được vuốt quay lại: trang trượt đi nhưng nền vẫn
+// giữ nguyên chỗ (màu nền, ảnh, cảnh trời sao), không còn bị thay bằng một mảng màu trơn.
+// live: chỉ bật lúc trang đang trượt (không chạy hiệu ứng thứ hai suốt lúc trang đứng yên cho đỡ tốn pin).
+// Video thì không phát bản thứ hai (tốn pin): dùng lớp phủ tối / sáng như trước.
+const scene = Platform.OS === 'web' ? null : (require('../theme/effects/Ambient') as typeof import('../theme/effects/Ambient'));
+export function PageBackdrop({ live = false }: { live?: boolean }) {
+  const { theme } = useTheme();
+  const { type, uri, dim } = theme.background;
+  const media = type !== 'preset' && !!uri;
+  return (
+    <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: theme.background.color }]}>
+      {media && type === 'image' && <AppBackground />}
+      {media && type === 'video' && (
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: theme.colors.bg, opacity: Math.max(0.85, 1 - dim * 0.2) }]} />
+      )}
+      {scene && !media && <scene.ThemeScene />}
+      {!media && theme.preset === 'cover' && <CoverBackdrop />}
+      {/* Đang vuốt: chạy cả hiệu ứng (sao băng, hoa rơi...) theo cùng đồng hồ với nền chung nên khớp nhau */}
+      {scene && live && <scene.AmbientEffect />}
+    </View>
+  );
+}
+
+// Bộ "Theo ảnh bìa": nền chuyển màu êm (~0,9s) mỗi khi đổi bài, kèm một quầng sáng nhẹ màu nhấn ở phía trên
+function CoverBackdrop() {
+  const { theme } = useTheme();
+  const to = theme.background.color;
+  const accent = theme.colors.accent;
+  const from = React.useRef(to);
+  const shown = React.useRef(to);
+  const p = useSharedValue(1);
+  const pair = useSharedValue<[string, string]>([to, to]);
+  React.useEffect(() => {
+    if (to === shown.current) return;
+    from.current = shown.current;
+    shown.current = to;
+    pair.value = [from.current, to];
+    p.value = 0;
+    p.value = withTiming(1, { duration: 900, easing: Easing.inOut(Easing.cubic) });
+  }, [to]); // eslint-disable-line react-hooks/exhaustive-deps
+  const st = useAnimatedStyle(() => ({ backgroundColor: interpolateColor(p.value, [0, 1], pair.value) }));
+  return (
+    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      <Animated.View style={[StyleSheet.absoluteFill, st]} />
+      <LinearGradient colors={[accent + '30', accent + '00']} style={{ position: 'absolute', left: 0, right: 0, top: 0, height: '45%' }} />
+    </View>
+  );
 }

@@ -1,16 +1,18 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { Animated, Easing, Image, Platform, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { Animated, Easing, Image, Platform, StyleSheet, View } from 'react-native';
 import { Easing as REasing, runOnJS, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useTheme } from './ThemeProvider';
 import type { ThemePresetId } from './presets';
 import type { ThemeEffect } from './effects/EffectOverlay';
+import { useScreenSize } from '../components/ScreenSize';
 
 const USE_NATIVE = Platform.OS !== 'web';
 const FADE_MS = 650;
 
 // Hiệu ứng riêng của từng bộ màu (Skia lỗi hoặc web thì mờ dần)
 const EFFECT_OF: Record<ThemePresetId, ThemeEffect> = {
-  dark: 'ink', light: 'sun', green: 'leaves', ocean: 'ripple', latte: 'coffee', snow: 'snow',
+  dark: 'ink', light: 'sun', green: 'leaves', ocean: 'ripple', latte: 'coffee', snow: 'snow', sakura: 'sun', meteor: 'ink', starry: 'ink', aurora: 'ink', rain: 'ripple', neon: 'ink',
+  smoke: 'ink', cover: 'ink',
 };
 
 // Skia chỉ nạp trên iOS/Android (web chưa cài CanvasKit)
@@ -62,7 +64,7 @@ async function loadSkiaImage(uri: string) {
 
 export function ThemeTransition({ children }: { children: React.ReactNode }) {
   const { theme, setPreset } = useTheme();
-  const { width, height } = useWindowDimensions();
+  const { width, height } = useScreenSize();
   const root = useRef<React.ElementRef<typeof View>>(null);
   const [shot, setShot] = useState<Shot | null>(null);
   const [holdImage, setHoldImage] = useState(true); // ảnh chụp kiểu thường che màn hình trong lúc chờ đổi theme
@@ -85,7 +87,13 @@ export function ThemeTransition({ children }: { children: React.ReactNode }) {
   const applyPreset = useCallback(
     (id: ThemePresetId) => {
       switched.current = true;
+      // đo cả app vẽ lại theo theme mới mất bao lâu (log 13/11: đổi theme → luồng JS đứng 5–9 giây, chưa rõ phần nào)
+      const t0 = Date.now();
       setPreset(id, pendingFollow.current);
+      requestAnimationFrame(() => {
+        const { log } = require('../data/applog') as typeof import('../data/applog');
+        log('jank', `đổi theme: cả app vẽ lại theo theme mới ${Date.now() - t0}ms`);
+      });
     },
     [setPreset]
   );
@@ -107,7 +115,23 @@ export function ThemeTransition({ children }: { children: React.ReactNode }) {
       switched.current = false;
       try {
         const { captureRef } = require('react-native-view-shot') as typeof import('react-native-view-shot');
-        const uri = await captureRef(root as any, { format: 'jpg', quality: 0.92, result: 'tmpfile' });
+        // Player đang đóng: gỡ tạm khỏi khung hình rồi mới chụp (log 13/11: đổi sang Trời sao trong Theme Studio làm app đơ 7–9 giây
+        // ngay lúc chụp; player đĩa than ẩn bên dưới có ảnh to, khói Skia và kính mờ)
+        const { playerShotHide, playerProgress } = require('../components/PlayerTransition') as typeof import('../components/PlayerTransition');
+        const hide = playerProgress.value < 0.003;
+        if (hide) {
+          playerShotHide.value = 1;
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        }
+        const t0 = Date.now();
+        let uri: string;
+        try {
+          uri = await captureRef(root as any, { format: 'jpg', quality: 0.92, result: 'tmpfile' });
+        } finally {
+          if (hide) playerShotHide.value = 0;
+        }
+        const { log } = require('../data/applog') as typeof import('../data/applog');
+        log('jank', `đổi theme: chụp màn hình ${Date.now() - t0}ms`);
 
         // Bộ có hiệu ứng riêng: nạp ảnh chụp vào Skia để shader "xoá" dần
         let effect: ThemeEffect | null = EFFECT_OF[id];

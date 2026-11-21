@@ -1,27 +1,21 @@
 import React, { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { ArtSlab, glassShadow } from './Glass';
 import { Animated, Easing, Platform, Pressable, StyleSheet, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeProvider';
-import { GlassFill } from './Glass';
-import { usePlayer } from '../player/PlayerProvider';
-import { useDraggable } from './useDraggable';
+import { usePlayerPick } from '../player/PlayerProvider';
+import { GLIDE, useDraggable } from './useDraggable';
 import type { MiniAnchor } from '../theme/types';
-import { Cover } from './Cover';
-import { playerOrigin } from './PlayerTransition';
-import type { ViewRef } from '../player/PlayerProvider';
-import { FULL_LENGTH, MP_ALBUM, MP_BUTTON, MP_GAP, MP_PADDING, MP_THICKNESS, resolveMini, useFrame } from './layout';
+import { playerOrigin, prewarmPlayer } from './PlayerTransition';
+import { MP_THICKNESS, resolveMini, useFrame } from './layout';
 
 const USE_NATIVE = Platform.OS !== 'web';
-// Chờ lần bấm thứ hai trong bao lâu (bấm đúp = đổi bubble). Ngắn quá thì bấm đúp khó trúng.
-const DOUBLE_TAP_MS = 170;
 
 export function MiniPlayer({ hidden, onOpen }: { hidden: boolean; onOpen: () => void }) {
-  const { theme, setMiniPlayerAnchor, setMiniPlayerCollapsed } = useTheme();
+  const { theme, landscape, setMiniPlayerAnchor, setMiniPlayerCollapsed } = useTheme();
   const frame = useFrame();
-  const { track, isPlaying, togglePlay, next, prev, playerRef, emergeFrom, setEmergeFrom } = usePlayer();
+  const { track, playerRef, emergeFrom, setEmergeFrom } = usePlayerPick('track', 'playerRef', 'emergeFrom', 'setEmergeFrom');
   const insets = useSafeAreaInsets();
-  const albumRef = useRef<ViewRef>(null);
 
   // Vị trí và trạng thái bubble đang hiển thị nằm ở state cục bộ: đổi là mini player đổi ngay, chỉ nó vẽ lại.
   // Theme (làm 10 nơi vẽ lại + stringify + ghi ổ đĩa) được cập nhật muộn, sau khi animation đã xong.
@@ -62,45 +56,49 @@ export function MiniPlayer({ hidden, onOpen }: { hidden: boolean; onOpen: () => 
     },
     [persist]
   );
-  const setCollapsed = useCallback(
-    (c: boolean) => {
-      setLive((l) => ({ ...l, collapsed: c }));
-      persist({ collapsed: c });
-    },
-    [persist]
-  );
   useEffect(() => flush, [flush]); // thoát màn hình thì ghi nốt phần còn chờ
 
-  const collapsed = live.collapsed; // đang thu nhỏ thành bubble, chỉ còn ảnh album
-  const collapsedRef = useRef(collapsed);
-  collapsedRef.current = collapsed;
+  // Mini player giờ chỉ còn một "bong bóng": ảnh album tròn hoặc vuông bo góc (tuỳ chọn trong Cài đặt), không viền,
+  // không nút. Bấm vào thì bong bóng nở ra thành màn player (kiểu bong bóng cửa sổ nổi của Xiaomi / OPPO).
+  // Giữ lâu rồi kéo: đổi chỗ, hoặc thả vào dock để gộp (như cũ)
+  const S = MP_THICKNESS; // cỡ bong bóng
+  // Tấm kính vuông bo góc liền (squircle), ảnh bìa nằm bên trong tấm kính, cách mép một khoảng = độ dày kính
+  const bubbleRadius = Math.round(S * 0.3);
+  // Cả ảnh bìa là tấm kính: không còn khung kính bao quanh ảnh nữa (INSET = 0), hiệu ứng nằm ở mép và góc (xem ArtSlab)
+  const INSET = 0;
+  const artRadius = bubbleRadius;
 
-  // ---- Hình học (tính trước mọi hook dùng tới nó)
-  const rect = resolveMini(theme, insets, frame.width, frame.height, live.anchor, collapsed);
-  const vertical = rect.vertical; // đứng dọc hay nằm ngang (đã tính cả việc đứng dọc cạnh dock ở góc)
-  // Đứng dọc ở nửa dưới màn hình thì ảnh album nằm dưới cùng, ở nửa trên thì nằm trên cùng
-  const albumAtEnd = vertical && rect.y + rect.h / 2 > frame.height / 2;
-  // Tâm ảnh album tính từ góc trên trái của mini player. Ảnh luôn đứng yên khi khung co/giãn.
-  const half = MP_THICKNESS / 2;
-  const albumCY = albumAtEnd ? rect.h - half : half;
-  const geom = { x: rect.x + frame.left, y: rect.y, cy: albumCY };
+  // Màn hình ngang (dock dạng thanh): góc dưới phải, ngay dưới dock dọc
+  const anchor: MiniAnchor = landscape ? { edge: 'bottom', t: 1 } : live.anchor;
+
+  // ---- Hình học (tính trước mọi hook dùng tới nó): luôn ở dạng bong bóng
+  const rect = resolveMini(theme, insets, frame.width, frame.height, anchor, true);
+  const half = S / 2;
+  const geom = { x: rect.x + frame.left, y: rect.y };
   const geomRef = useRef(geom);
 
-  // ---- Thả ở chỗ mới / đổi bubble: trượt ảnh album từ chỗ cũ tới chỗ mới
-  const landing = useRef<{ dx: number; dy: number } | null>(null);
+  // Vị trí thật của bong bóng trên màn hình (tính từ hình học, không đo): player nở ra từ đây và thu về đúng đây
+  useLayoutEffect(() => {
+    // Vẫn cập nhật khi đang ẩn (player đang mở): xoay màn hình thì player biết chỗ mới để thu về
+    if (theme.miniPlayer.merged) return;
+    playerOrigin.current = { x: geom.x + INSET, y: geom.y + INSET, w: S - INSET * 2, h: S - INSET * 2, r: artRadius, slab: true };
+  }, [geom.x, geom.y, S, bubbleRadius, hidden, theme.miniPlayer.merged]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ---- Thả ở chỗ mới: trượt bong bóng từ chỗ ngón tay nhả tới chỗ mới
+  const landing = useRef<{ dx: number; dy: number; vx: number; vy: number } | null>(null);
   const drop = useCallback(
-    (a: MiniAnchor, dx: number, dy: number) => {
-      landing.current = { dx, dy };
+    (a: MiniAnchor, dx: number, dy: number, vx: number, vy: number) => {
+      landing.current = { dx, dy, vx, vy };
       setAnchor(a);
     },
     [setAnchor]
   );
 
   const d = useDraggable('player', {
-    anchor: live.anchor,
+    anchor,
     origin: () => {
       const g = geomRef.current;
-      return { cx: g.x + half, cy: g.y + g.cy };
+      return { cx: g.x + half, cy: g.y + half };
     },
     drop,
   });
@@ -112,47 +110,24 @@ export function MiniPlayer({ hidden, onOpen }: { hidden: boolean; onOpen: () => 
     const l = landing.current;
     landing.current = null;
     if (!l) return;
-    // Ngay sau khi đổi chỗ, đặt pan sao cho ảnh album vẫn ở đúng chỗ cũ (chỗ ngón tay vừa nhả), rồi trượt về 0.
-    // Chỉ dùng hình học: không đo, không ẩn hiện.
-    const ox = prevGeom.x + half + l.dx - (geom.x + half);
-    const oy = prevGeom.y + prevGeom.cy + l.dy - (geom.y + geom.cy);
+    const ox = prevGeom.x + l.dx - geom.x;
+    const oy = prevGeom.y + l.dy - geom.y;
     d.pan.stopAnimation();
     d.pan.setValue({ x: ox, y: oy });
-    Animated.timing(d.pan, { toValue: { x: 0, y: 0 }, duration: 220, easing: Easing.out(Easing.cubic), useNativeDriver: USE_NATIVE }).start();
-  }, [geom.x, geom.y, geom.cy, live.anchor, collapsed]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Trượt tiếp từ đúng vận tốc lúc buông tay rồi hít vào chỗ mới (trước đây: luôn bay 220ms, bỏ qua cú ném → khựng lúc nhả)
+    Animated.spring(d.pan, { toValue: { x: 0, y: 0 }, velocity: { x: clampV(l.vx), y: clampV(l.vy) } as any, ...GLIDE, useNativeDriver: USE_NATIVE }).start();
+  }, [geom.x, geom.y, anchor.edge, anchor.t]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Ảnh album lún nhẹ ngay khi ngón tay chạm vào, để thấy app đã nhận lệnh trong lúc chờ xem có bấm đúp không
+  // Bong bóng lún nhẹ khi ngón tay chạm vào
   const press = useRef(new Animated.Value(1)).current;
-  const pressIn = () => Animated.timing(press, { toValue: 0.9, duration: 70, useNativeDriver: USE_NATIVE }).start();
-  const pressOut = () => Animated.spring(press, { toValue: 1, friction: 5, tension: 160, useNativeDriver: USE_NATIVE }).start();
+  const pressIn = () => {
+    prewarmPlayer(); // ngón tay vừa chạm: đánh thức màn player trước, nhấc tay là mở ra đầy đủ nút
+    Animated.timing(press, { toValue: 0.9, duration: 70, useNativeDriver: USE_NATIVE }).start();
+  };
+  const pressOut = () => Animated.timing(press, { toValue: 1, duration: 160, easing: Easing.out(Easing.quad), useNativeDriver: USE_NATIVE }).start();
 
-  const tapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => {
-    if (tapTimer.current) clearTimeout(tapTimer.current);
-  }, []);
-
-  // Giữ lâu thì co lại thành hình tròn (pill) hoặc hình vuông bo góc (rect), chỉ còn ảnh album. Thả ra thì dãn lại.
-  // Dùng giá trị riêng chạy bằng JS vì đổi width/height không dùng được native driver.
-  const shrink = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    const to = d.active || collapsed ? 1 : 0;
-    // Thu lại thì êm, dãn ra thì nảy nhẹ cho có cảm giác kéo giãn
-    Animated.spring(shrink, { toValue: to, friction: to ? 9 : 6, tension: 120, useNativeDriver: false }).start();
-  }, [d.active, collapsed, shrink]);
-
-  // Cho hiệu ứng đóng player đo lại vị trí thật của ảnh album ở chỗ mini player hiện tại
-  useEffect(() => {
-    playerOrigin.measureLive = (cb) => {
-      requestAnimationFrame(() => {
-        if (!albumRef.current) return cb(null);
-        const r = theme.miniPlayer.variant === 'pill' ? MP_ALBUM / 2 : 12;
-        albumRef.current.measureInWindow((x, y, w, h) => cb({ x, y, w, h, r }));
-      });
-    };
-  });
-
-  // Hiệu ứng tách ra: bay từ mục Player trên dock về vị trí của mini player.
-  // Chạy bằng layout effect để mini player được ẩn trước khi kịp hiện ra ở chỗ cuối.
+  // Hiệu ứng tách ra: bay từ mục Player trên dock về vị trí của bong bóng.
+  // Chạy bằng layout effect để bong bóng được ẩn trước khi kịp hiện ra ở chỗ cuối.
   useLayoutEffect(() => {
     if (theme.miniPlayer.merged || hidden) return;
     const origin = emergeFrom;
@@ -160,6 +135,10 @@ export function MiniPlayer({ hidden, onOpen }: { hidden: boolean; onOpen: () => 
     d.scale.stopAnimation();
     d.opacity.stopAnimation();
     d.pan.setValue({ x: 0, y: 0 });
+    // Lúc bấm mở player, hiệu ứng lún (0.9) bị ngắt giữa chừng vì bong bóng ẩn đi ngay => hiện lại phải về đúng cỡ,
+    // nếu không player thu về đúng 60pt rồi bong bóng lại hiện ở 54pt (trông như giật nhỏ lại)
+    press.stopAnimation();
+    press.setValue(1);
 
     if (!origin) {
       d.scale.setValue(1);
@@ -169,165 +148,52 @@ export function MiniPlayer({ hidden, onOpen }: { hidden: boolean; onOpen: () => 
 
     d.scale.setValue(0.3);
     d.opacity.setValue(0);
-    playerRef.current?.measureInWindow((x, y, w, h) => {
-      d.pan.setValue({ x: origin.cx - (x + w / 2), y: origin.cy - (y + h / 2) });
-      Animated.parallel([
-        Animated.spring(d.pan, { toValue: { x: 0, y: 0 }, friction: 6, tension: 80, useNativeDriver: USE_NATIVE }),
-        Animated.spring(d.scale, { toValue: 1, friction: 6, useNativeDriver: USE_NATIVE }),
-        Animated.timing(d.opacity, { toValue: 1, duration: 160, useNativeDriver: USE_NATIVE }),
-      ]).start();
-      setEmergeFrom(null);
-    });
+    const g = geomRef.current;
+    d.pan.setValue({ x: origin.cx - (g.x + half), y: origin.cy - (g.y + half) });
+    Animated.parallel([
+      Animated.timing(d.pan, { toValue: { x: 0, y: 0 }, duration: 320, easing: Easing.out(Easing.cubic), useNativeDriver: USE_NATIVE }),
+      Animated.timing(d.scale, { toValue: 1, duration: 320, easing: Easing.out(Easing.cubic), useNativeDriver: USE_NATIVE }),
+      Animated.timing(d.opacity, { toValue: 1, duration: 160, useNativeDriver: USE_NATIVE }),
+    ]).start();
+    setEmergeFrom(null);
   }, [theme.miniPlayer.merged, hidden]);
 
-  if (theme.miniPlayer.merged || hidden) return null;
+  if (theme.miniPlayer.merged) return null;
+  if (theme.dock.mode === 'apple' || theme.dock.mode === 'zyx') return null; // dock Apple Music có mini player riêng (viên thuốc; xoay ngang thì nằm giữa đáy — AppleDockLand)
+  // Lúc player đang mở: bong bóng vẫn nằm đó (ẩn đi), không gỡ ra. Đóng player thì chỉ việc hiện lại — ảnh bìa, viền kính
+  // đã vẽ sẵn. Trước đây gỡ ra rồi dựng lại nên ảnh hiện trước, viền kính hiện sau một nhịp (thấy "giật" lúc đóng)
 
-  const pill = theme.miniPlayer.variant === 'pill';
-  const radius = pill ? MP_THICKNESS / 2 : theme.miniPlayer.style.rectRadius;
-  const albumRadius = pill ? MP_ALBUM / 2 : 12;
-  const lit = d.active || d.merging;
-
-  const btn = { width: MP_BUTTON, height: MP_BUTTON, alignItems: 'center' as const, justifyContent: 'center' as const };
-
-  // Đang kéo: nổi lên với bóng đổ mờ, không viền
-  const glow = lit
-    ? {
-        shadowColor: '#000',
-        shadowOpacity: 0.45,
-        shadowRadius: 18,
-        shadowOffset: { width: 0, height: 10 },
-        elevation: 14,
-      }
-    : null;
-
-  const size = vertical ? { width: MP_THICKNESS, height: FULL_LENGTH } : { width: FULL_LENGTH, height: MP_THICKNESS };
-
-  // Bấm 1 lần vào ảnh: mở player. Bấm 2 lần: thu thành bubble (hoặc dãn lại thành mini player nếu đang là bubble).
-  // Phải đợi một chút sau lần bấm đầu để biết có lần bấm thứ hai không.
+  // Bấm 1 lần: mở player ngay (không còn chờ xem có bấm đúp không)
   const openPlayer = () => {
-    if (!albumRef.current) return onOpen();
-    albumRef.current.measureInWindow((x, y, w, h) => {
-      playerOrigin.current = { x, y, w, h, r: albumRadius };
-      onOpen();
-    });
+    const g = geomRef.current;
+    playerOrigin.current = { x: g.x + INSET, y: g.y + INSET, w: S - INSET * 2, h: S - INSET * 2, r: artRadius, slab: true };
+    onOpen();
   };
-  const onAlbumPress = () => {
-    if (tapTimer.current) {
-      clearTimeout(tapTimer.current);
-      tapTimer.current = null;
-      landing.current = { dx: 0, dy: 0 };
-      setCollapsed(!collapsedRef.current);
-      return;
-    }
-    tapTimer.current = setTimeout(() => {
-      tapTimer.current = null;
-      openPlayer();
-    }, DOUBLE_TAP_MS);
-  };
-
-  // Ba nút bị hút vào giữa ảnh album khi thu nhỏ
-  const btnLen = 3 * MP_BUTTON + 2 * MP_GAP;
-  const pull = (albumAtEnd ? 1 : -1) * (MP_ALBUM / 2 + MP_GAP + btnLen / 2);
-  const pullAnim = shrink.interpolate({ inputRange: [0, 1], outputRange: [0, pull] });
-  const btnScale = shrink.interpolate({ inputRange: [0, 1], outputRange: [1, 0.2], extrapolate: 'clamp' });
-  const wAnim = shrink.interpolate({ inputRange: [0, 1], outputRange: [size.width, MP_THICKNESS] });
-  const hAnim = shrink.interpolate({ inputRange: [0, 1], outputRange: [size.height, MP_THICKNESS] });
-  const btnOpacity = shrink.interpolate({ inputRange: [0, 0.7], outputRange: [1, 0], extrapolate: 'clamp' });
-
-  // QUAN TRỌNG: hai lớp mang hiệu ứng native (pan, scale/opacity) có kích thước CỐ ĐỊNH = rect.
-  // iOS (RN Fabric) áp lại transform từ props cũ mỗi khi view có transform đổi kích thước,
-  // nên nếu chúng co giãn theo khung (shrink chạy bằng JS) thì mini player bị giựt về chỗ cũ.
-  // Khung co giãn nằm bên trong, dính vào phía ảnh album.
-  const box = { width: rect.w, height: rect.h };
 
   return (
-    <View pointerEvents="box-none" style={[styles.layer, { left: rect.x, top: rect.y, zIndex: d.zIndex }]}>
-      <View ref={playerRef} collapsable={false} pointerEvents="box-none" style={box}>
-        <Animated.View
-          {...d.panHandlers}
-          pointerEvents="box-none"
-          style={[box, { transform: [{ translateX: d.pan.x }, { translateY: d.pan.y }] }]}
-        >
+    <View pointerEvents={hidden ? 'none' : 'box-none'} style={[styles.layer, { left: rect.x, top: rect.y, zIndex: d.zIndex, opacity: hidden ? 0 : 1 }]}>
+      <View ref={playerRef} collapsable={false} pointerEvents="box-none" style={{ width: S, height: S }}>
+        <Animated.View {...d.panHandlers} style={{ width: S, height: S, transform: [{ translateX: d.pan.x }, { translateY: d.pan.y }] }}>
           <Animated.View
-            pointerEvents="box-none"
             style={[
-              box,
-              {
-                justifyContent: albumAtEnd ? 'flex-end' : 'flex-start',
-                alignItems: 'flex-start',
-                opacity: d.opacity,
-                transform: [{ scale: d.scale }],
-                transformOrigin: [half, albumCY, 0],
-              },
-              glow,
+              { width: S, height: S, borderRadius: bubbleRadius, borderCurve: 'continuous', opacity: d.opacity, transform: [{ scale: d.scale }] },
+              glassShadow(1.15, theme.colors.glassTint !== 'dark'),
             ]}
           >
-            {/* Khung co giãn: nền và bo góc nằm ở đây, nội dung bên trong giữ nguyên cỡ và bị cắt khi khung co lại */}
-            <Animated.View
-              style={{
-                width: wAnim,
-                height: hAnim,
-                borderRadius: radius,
-                overflow: 'hidden',
+            <Pressable
+              {...d.pressProps}
+              onPressIn={pressIn}
+              onPressOut={() => {
+                pressOut();
+                d.pressProps.onPressOut();
               }}
+              testID="mini-bubble"
+              onPress={openPlayer}
             >
-              {/* Nền kính mờ theo theme, co giãn cùng khung */}
-              <GlassFill radius={radius} />
-              <Pressable
-                {...d.pressProps}
-                style={{
-                  position: 'absolute',
-                  left: 0,
-                  ...(albumAtEnd ? { bottom: 0 } : { top: 0 }),
-                  width: size.width,
-                  height: size.height,
-                  flexDirection: vertical ? (albumAtEnd ? 'column-reverse' : 'column') : 'row',
-                  alignItems: 'center',
-                  padding: MP_PADDING,
-                  gap: MP_GAP,
-                }}
-              >
-                <Pressable
-                  ref={albumRef}
-                  collapsable={false}
-                  {...d.pressProps}
-                  onPressIn={pressIn}
-                  onPressOut={() => {
-                    pressOut();
-                    d.pressProps.onPressOut();
-                  }}
-                  onPress={onAlbumPress}
-                  style={{ zIndex: 2 }}
-                >
-                  <Animated.View style={{ transform: [{ scale: press }] }}>
-                    <Cover track={track} style={{ width: MP_ALBUM, height: MP_ALBUM, borderRadius: albumRadius }}>
-                      <Ionicons name="musical-notes" size={20} color="rgba(255,255,255,0.85)" />
-                    </Cover>
-                  </Animated.View>
-                </Pressable>
-                <Animated.View
-                  pointerEvents={collapsed ? 'none' : 'auto'}
-                  style={{
-                    zIndex: 1,
-                    flexDirection: vertical ? 'column' : 'row',
-                    alignItems: 'center',
-                    gap: MP_GAP,
-                    opacity: btnOpacity,
-                    transform: [vertical ? { translateY: pullAnim } : { translateX: pullAnim }, { scale: btnScale }],
-                  }}
-                >
-                  <Pressable {...d.pressProps} onPress={prev} style={btn}>
-                    <Ionicons name="play-skip-back" size={20} color={theme.colors.text} />
-                  </Pressable>
-                  <Pressable {...d.pressProps} onPress={togglePlay} style={btn}>
-                    <Ionicons name={isPlaying ? 'pause' : 'play'} size={24} color={theme.colors.text} />
-                  </Pressable>
-                  <Pressable {...d.pressProps} onPress={next} style={btn}>
-                    <Ionicons name="play-skip-forward" size={20} color={theme.colors.text} />
-                  </Pressable>
-                </Animated.View>
-              </Pressable>
-            </Animated.View>
+              <Animated.View style={{ transform: [{ scale: press }] }}>
+                <ArtSlab track={track} size={S} radius={bubbleRadius} />
+              </Animated.View>
+            </Pressable>
           </Animated.View>
         </Animated.View>
       </View>
@@ -335,6 +201,10 @@ export function MiniPlayer({ hidden, onOpen }: { hidden: boolean; onOpen: () => 
   );
 }
 
+// Vận tốc ngón tay (px/ms) → px/giây cho lò xo của Animated, giới hạn để cú ném quá mạnh không văng vọt
+const clampV = (v: number) => Math.max(-4, Math.min(4, v || 0)) * 1000;
+
 const styles = StyleSheet.create({
   layer: { position: 'absolute' },
+  // Bong bóng không đổ bóng (trông tự nhiên hơn); lúc giữ để kéo thì chỉ phóng to nhẹ (1.08)
 });

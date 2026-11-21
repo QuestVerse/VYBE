@@ -1,18 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, PixelRatio, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { FadeBottom } from '../components/FadeBottom';
+import { ActivityIndicator, PixelRatio, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useTheme } from '../theme/ThemeProvider';
-import { usePlayer } from '../player/PlayerProvider';
+import { usePlayerPick } from '../player/PlayerProvider';
 import { useContentInsets } from '../components/FloatingDock';
 import { SmartImage } from '../components/Cover';
 import { useSongMenu } from '../components/useSongMenu';
 import { ArtistPage as ArtistNavPage, useNav } from '../nav/Nav';
-import { useAnimatedBack } from '../nav/SwipeBack';
+import { useAnimatedBack, useEntered } from '../nav/SwipeBack';
 import { useT } from '../i18n';
 import { musicSupported, toTrack, ytmusic } from '../music/lazy';
 import type { ArtistPage, Card } from '../music/ytmusic';
 import { isSaved, PlayContext, setSaved, useDbVersion } from '../data/db';
+import { useScreenSize } from '../components/ScreenSize';
+import Animated from 'react-native-reanimated';
+import { StretchyBg, useStretchScroll } from '../components/Stretchy';
+import { useActionSheet } from '../components/ActionSheet';
+import { openComposer } from '../components/PostComposer';
 
 const PAD = 16;
 const HERO_H = 340;
@@ -27,13 +33,32 @@ export function ArtistScreen({ page }: { page: ArtistNavPage }) {
   const { theme } = useTheme();
   const t = useT();
   const pad = useContentInsets();
-  const { width } = useWindowDimensions();
+  const { width } = useScreenSize();
   const { push, pop } = useNav();
+  const sheet = useActionSheet();
+  const openMore = () =>
+    sheet.openActions({ title: page.name, subtitle: t('kind.artist'), thumb: page.thumb, round: true }, [
+      {
+        label: t('sheet.postToProfile'),
+        icon: 'create-outline',
+        run: () => {
+          setTimeout(() => openComposer({ kind: 'artist', id: page.id, title: page.name, subtitle: '', thumb: page.thumb, source: 'yt' }), 250);
+        },
+      },
+      {
+        label: t('sheet.share'),
+        icon: 'share-outline',
+        run: () => void Share.share({ message: `${page.name}\nhttps://music.youtube.com/channel/${page.id}` }).catch(() => {}),
+      },
+    ]);
   const goBack = useAnimatedBack() ?? pop;
-  const { track, playTrack, shuffle, toggleShuffle } = usePlayer();
+  // Trượt vào xong mới dựng các kệ album / video (nhiều ảnh) để hiệu ứng mở trang không bị khựng
+  const entered = useEntered();
+  const { track, playTrack, shuffle, toggleShuffle } = usePlayerPick('track', 'playTrack', 'shuffle', 'toggleShuffle');
   const songMenu = useSongMenu();
   const dbv = useDbVersion();
   const { text, textSecondary, accent, onAccent, surface, border } = theme.colors;
+  const { scrollY, onScroll } = useStretchScroll();
 
   const [data, setData] = useState<ArtistPage | null>(pageCache.get(page.id) ?? null);
   const [status, setStatus] = useState<'loading' | 'done' | 'error'>(data ? 'done' : 'loading');
@@ -83,24 +108,32 @@ export function ArtistScreen({ page }: { page: ArtistNavPage }) {
   };
 
   // Cuối ảnh lớn mờ dần vào màu nền (nền ảnh/video thì mờ hẳn để lộ nền chung)
-  const fadeTo = theme.background.type === 'preset' ? theme.colors.bg : theme.colors.bg + '00';
   const imgSize = Math.round(Math.max(width, HERO_H) * PixelRatio.get());
 
   return (
     <View style={StyleSheet.absoluteFill}>
-      <ScrollView bounces={false} overScrollMode="never" contentContainerStyle={{ paddingBottom: pad.bottom + pad.endPadding }}>
+      <Animated.ScrollView onScroll={onScroll} scrollEventThrottle={16} contentContainerStyle={{ paddingBottom: pad.bottom + pad.endPadding }}>
         {/* Ảnh lớn của nghệ sĩ, tên đè lên phần dưới ảnh */}
         <View style={{ height: HERO_H }}>
-          {thumb ? (
-            <SmartImage url={thumb} size={imgSize} style={StyleSheet.absoluteFill} />
-          ) : (
-            <View style={[StyleSheet.absoluteFill, { backgroundColor: surface, alignItems: 'center', justifyContent: 'center' }]}>
-              <Ionicons name="person" size={96} color={textSecondary} />
-            </View>
-          )}
-          <LinearGradient colors={['rgba(0,0,0,0.25)', 'rgba(0,0,0,0)', fadeTo]} locations={[0, 0.45, 1]} style={StyleSheet.absoluteFill} />
+          {/* Ảnh + lớp mờ: giãn ra khi kéo quá đầu trang */}
+          <StretchyBg scrollY={scrollY} height={HERO_H}>
+            <FadeBottom from={0.5}>
+            {thumb ? (
+              <SmartImage url={thumb} size={imgSize} style={StyleSheet.absoluteFill} />
+            ) : (
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: surface, alignItems: 'center', justifyContent: 'center' }]}>
+                <Ionicons name="person" size={96} color={textSecondary} />
+              </View>
+            )}
+            <LinearGradient colors={['rgba(0,0,0,0.25)', 'rgba(0,0,0,0)']} locations={[0, 0.45]} style={StyleSheet.absoluteFill} />
+            </FadeBottom>
+          </StretchyBg>
           <Pressable onPress={goBack} hitSlop={10} style={[styles.back, { top: pad.top + 8, left: PAD }]}>
             <Ionicons name="chevron-back" size={24} color="#FFFFFF" />
+          </Pressable>
+          {/* Tuỳ chọn nghệ sĩ: đăng lên hồ sơ, chia sẻ link */}
+          <Pressable onPress={openMore} hitSlop={10} style={[styles.back, { top: pad.top + 8, right: PAD }]}>
+            <Ionicons name="ellipsis-horizontal" size={20} color="#FFFFFF" />
           </Pressable>
           <Text numberOfLines={2} style={[styles.name, { color: text }]}>{name}</Text>
         </View>
@@ -149,10 +182,10 @@ export function ArtistScreen({ page }: { page: ArtistNavPage }) {
         </View>
 
         {/* Album, Đĩa đơn, Video, Nghệ sĩ tương tự... */}
-        {(data?.shelves ?? []).map((shelf, si) => (
+        {(entered ? data?.shelves ?? [] : []).map((shelf, si) => (
           <View key={`${si}:${shelf.title}`}>
             <Text style={[styles.section, { color: text, paddingHorizontal: PAD }]}>{shelf.title}</Text>
-            <ScrollView horizontal bounces={false} overScrollMode="never" showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingHorizontal: PAD }}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingHorizontal: PAD }}>
               {shelf.cards.map((c) => {
                 const round = c.kind === 'artist';
                 return (
@@ -172,7 +205,7 @@ export function ArtistScreen({ page }: { page: ArtistNavPage }) {
             </ScrollView>
           </View>
         ))}
-      </ScrollView>
+      </Animated.ScrollView>
     </View>
   );
 }

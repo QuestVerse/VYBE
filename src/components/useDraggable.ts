@@ -1,14 +1,18 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
-import { Animated, Easing, PanResponder, Platform } from 'react-native';
+import { Animated, Easing, LayoutAnimation, PanResponder, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeProvider';
-import { useDrag, usePlayer } from '../player/PlayerProvider';
+import { useDrag, usePlayerPick } from '../player/PlayerProvider';
 import { Edge, MiniAnchor, Position } from '../theme/types';
-import { targetAnchor, targetPosition, useFrame } from './layout';
+import { DOCK_GAP, DOCK_PADDING, dockCell, targetAnchor, targetPosition, useFrame } from './layout';
+import { log } from '../data/applog';
 
 const USE_NATIVE = Platform.OS !== 'web';
 const MERGE_PAD = 12; // ngón tay cách khối kia bao nhiêu px thì tính là chạm để hợp nhất
 const LONG_PRESS_MS = 300;
+// Bong bóng trượt về chỗ: lò xo giảm chấn tới hạn (damping = 2√stiffness) — giống "trượt có ma sát rồi hít về mép" trên
+// trang thử: tới nơi là dừng, không vượt, không nảy. Vận tốc lúc buông tay được giữ nguyên nên không bị khựng lúc nhả
+export const GLIDE = { stiffness: 110, damping: 21, mass: 1, overshootClamping: true };
 
 type Rect = { x: number; y: number; w: number; h: number };
 type Target = Position | MiniAnchor | 'merge';
@@ -29,12 +33,33 @@ const targetKey = (t: Target) => (typeof t === 'string' ? t : anchorKey(t, 2));
 export interface LiveAnchor {
   anchor: MiniAnchor;
   origin: () => { cx: number; cy: number };
-  drop: (a: MiniAnchor, dx: number, dy: number) => void;
+  drop: (a: MiniAnchor, dx: number, dy: number, vx: number, vy: number) => void; // vx, vy: vận tốc lúc buông tay (px/ms)
+}
+
+// Dock giãn ra / co lại êm khi thêm / bớt mục Player (không nảy)
+export const DOCK_RESIZE = {
+  duration: 280,
+  create: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.opacity },
+  update: { type: LayoutAnimation.Types.easeInEaseOut },
+  delete: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.opacity },
+};
+
+// Tâm của ô cuối dock SAU khi dock đã giãn thêm một ô (dock căn giữa thì giãn đều hai đầu,
+// dính góc trên thì giãn xuống, dính góc dưới thì giãn lên)
+function mergeSlot(r: { x: number; y: number; w: number; h: number }, pos: Position, labels: boolean) {
+  const cell = dockCell(pos, labels);
+  const step = cell.main + DOCK_GAP;
+  const endOff = DOCK_PADDING + cell.main / 2;
+  if (pos === 'top' || pos === 'bottom') return { x: r.x + r.w + step / 2 - endOff, y: r.y + r.h / 2 };
+  const grow = pos === 'left' || pos === 'right' ? step / 2 : pos.startsWith('top') ? step : 0;
+  return { x: r.x + r.w / 2, y: r.y + r.h + grow - endOff };
 }
 
 export function useDraggable(kind: 'dock' | 'player', live?: LiveAnchor) {
-  const { theme, setDockPosition, setMiniPlayerAnchor, setMerged } = useTheme();
-  const { dockRef, playerRef } = usePlayer();
+  const { theme, landscape, setDockPosition, setMiniPlayerAnchor, setMerged } = useTheme();
+  const landRef = useRef(landscape);
+  landRef.current = landscape;
+  const { dockRef, playerRef } = usePlayerPick('dockRef', 'playerRef');
   const { drag, setDrag } = useDrag();
   const { width, height, left } = useFrame();
   const insets = useSafeAreaInsets();
@@ -60,24 +85,24 @@ export function useDraggable(kind: 'dock' | 'player', live?: LiveAnchor) {
   const landFrom = useRef<{ cx: number; cy: number } | null>(null);
 
   // PanResponder chỉ tạo một lần nên cần đọc giá trị mới nhất qua ref
-  const latest = useRef({ width, height, left, position, posKey, insets, margin: theme.dock.style.margin, live, akey });
-  latest.current = { width, height, left, position, posKey, insets, margin: theme.dock.style.margin, live, akey };
+  const latest = useRef({ width, height, left, position, posKey, insets, margin: theme.dock.style.margin, live, akey, dockPos: theme.dock.position, dockLabels: theme.dock.labels });
+  latest.current = { width, height, left, position, posKey, insets, margin: theme.dock.style.margin, live, akey, dockPos: theme.dock.position, dockLabels: theme.dock.labels };
 
   const active = drag?.kind === kind;
   const merging = !!drag && drag.kind !== kind && drag.target === 'merge';
 
   // Nổi lên và phóng nhẹ khi đang giữ/kéo, hoặc khi khối kia đang kéo tới để hợp nhất
   useEffect(() => {
-    Animated.spring(scale, { toValue: active || merging ? 1.08 : 1, friction: 6, useNativeDriver: USE_NATIVE }).start();
+    Animated.timing(scale, { toValue: active || merging ? 1.06 : 1, duration: 200, easing: Easing.out(Easing.cubic), useNativeDriver: USE_NATIVE }).start();
   }, [active, merging, scale]);
 
   const snapBack = () => {
     if (latest.current.live) {
-      // Mini player: trượt về chỗ cũ, không nảy
-      Animated.timing(pan, { toValue: { x: 0, y: 0 }, duration: 220, easing: Easing.out(Easing.cubic), useNativeDriver: USE_NATIVE }).start();
+      // Mini player: trượt về chỗ cũ như tấm kính trên mặt bàn (lò xo giảm chấn tới hạn: không vượt, không nảy)
+      Animated.spring(pan, { toValue: { x: 0, y: 0 }, ...GLIDE, useNativeDriver: USE_NATIVE }).start();
       return;
     }
-    Animated.spring(pan, { toValue: { x: 0, y: 0 }, useNativeDriver: USE_NATIVE }).start();
+    Animated.timing(pan, { toValue: { x: 0, y: 0 }, duration: 240, easing: Easing.out(Easing.cubic), useNativeDriver: USE_NATIVE }).start();
   };
 
   const reset = () => {
@@ -88,26 +113,32 @@ export function useDraggable(kind: 'dock' | 'player', live?: LiveAnchor) {
     lastEdge.current = undefined;
   };
 
-  const finish = (dx: number, dy: number) => {
+  const finish = (dx: number, dy: number, vx = 0, vy = 0) => {
     const t = target.current;
     reset();
 
     if (t === 'merge') {
       const r = otherRect.current;
       if (kind === 'player' && r) {
-        // Bay vào giữa dock, nhỏ dần rồi hợp nhất
-        const tx = r.x + r.w / 2 - start.current.cx;
-        const ty = r.y + r.h / 2 - start.current.cy;
+        // Bay thẳng vào đúng ô cuối của dock (chỗ mục Player sẽ hiện ra), nhỏ dần và mờ ở đoạn cuối,
+        // rồi dock giãn ra êm (LayoutAnimation) và mục Player hiện dần đúng tại chỗ bong bóng vừa đáp xuống
+        const { x: cx, y: cy } = mergeSlot(r, latest.current.dockPos, latest.current.dockLabels);
+        const tx = cx - start.current.cx;
+        const ty = cy - start.current.cy;
+        log('ui', 'thả mini player vào dock');
+        const ease = Easing.inOut(Easing.cubic);
         Animated.parallel([
-          Animated.timing(pan, { toValue: { x: tx, y: ty }, duration: 200, useNativeDriver: USE_NATIVE }),
-          Animated.timing(scale, { toValue: 0.3, duration: 200, useNativeDriver: USE_NATIVE }),
-          Animated.timing(opacity, { toValue: 0, duration: 200, useNativeDriver: USE_NATIVE }),
+          Animated.timing(pan, { toValue: { x: tx, y: ty }, duration: 280, easing: ease, useNativeDriver: USE_NATIVE }),
+          Animated.timing(scale, { toValue: 0.55, duration: 280, easing: ease, useNativeDriver: USE_NATIVE }),
+          Animated.timing(opacity, { toValue: 0, duration: 280, easing: Easing.in(Easing.quad), useNativeDriver: USE_NATIVE }),
         ]).start(() => {
+          if (Platform.OS !== 'web') LayoutAnimation.configureNext(DOCK_RESIZE);
           setMerged(true);
           setDrag(null);
         });
       } else {
         // Dock thả lên mini player: mini player được nhập vào dock
+        if (Platform.OS !== 'web') LayoutAnimation.configureNext(DOCK_RESIZE);
         setMerged(true);
         setDrag(null);
         snapBack();
@@ -119,7 +150,7 @@ export function useDraggable(kind: 'dock' | 'player', live?: LiveAnchor) {
     if (t && typeof t !== 'string') {
       if (anchorKey(t, 3) !== latest.current.akey) {
         const live = latest.current.live;
-        if (live) live.drop(t, dx, dy);
+        if (live) live.drop(t, dx, dy, vx, vy);
         else {
           landFrom.current = { cx: start.current.cx + dx, cy: start.current.cy + dy };
           setMiniPlayerAnchor(t);
@@ -152,10 +183,12 @@ export function useDraggable(kind: 'dock' | 'player', live?: LiveAnchor) {
 
   const responder = useRef(
     PanResponder.create({
-      // Chỉ nhận cử chỉ kéo sau khi đã giữ lâu, để các nút bên trong vẫn bấm bình thường
-      onMoveShouldSetPanResponder: () => armed.current,
+      // Dock: chỉ nhận cử chỉ kéo sau khi đã giữ lâu, để các nút bên trong vẫn bấm bình thường.
+      // Mini player: kéo được ngay (như trang thử trên web) — ngón tay di quá 6px là cầm lên, chạm nhẹ vẫn là mở player
+      onMoveShouldSetPanResponder: (_, g) => armed.current || (kind === 'player' && !landRef.current && Math.hypot(g.dx, g.dy) > 6),
       onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: () => {
+        if (!armed.current) arm(); // mini player kéo ngay không cần giữ lâu: chuẩn bị như lúc giữ lâu
         dragging.current = true;
       },
       onPanResponderMove: (_, g) => {
@@ -176,14 +209,30 @@ export function useDraggable(kind: 'dock' | 'player', live?: LiveAnchor) {
           setDrag({ kind, target: next });
         }
       },
-      onPanResponderRelease: (_, g) => finish(g.dx, g.dy),
+      onPanResponderRelease: (_, g) => {
+        // Ném có quán tính (như tấm kính trượt trên mặt bàn): đoán chỗ nó sẽ trượt tới theo vận tốc lúc buông tay,
+        // rồi chọn vị trí theo chỗ đó thay vì chỗ ngón tay đang đứng
+        if (kind === 'player' && target.current !== 'merge') {
+          const K = 240; // ms — quãng trượt ≈ vận tốc × K (ma sát mặt bàn)
+          const { width: W, height: H, left: L, insets: ins, margin } = latest.current;
+          const px = Math.max(0, Math.min(W, g.moveX - L + g.vx * K));
+          const py = Math.max(0, Math.min(H, g.moveY + g.vy * K));
+          if (Math.hypot(g.vx, g.vy) > 0.25 && !isOver(otherRect.current, px + L, py)) {
+            const next = targetAnchor(px, py, W, H, ins, margin, lastEdge.current);
+            target.current = next;
+            lastKey.current = targetKey(next);
+          }
+        }
+        finish(g.dx, g.dy, g.vx, g.vy);
+      },
       onPanResponderTerminate: () => cancel(),
     })
   ).current;
 
   // Gọi khi giữ đủ lâu: đo vị trí của mình và của khối kia, rồi bật hiệu ứng nổi lên
   const arm = () => {
-    if (armed.current) return;
+    // Màn hình ngang: dock và mini player nằm cố định (cạnh phải / góc dưới phải), không kéo đổi chỗ
+    if (armed.current || landRef.current) return;
     armed.current = true;
     target.current = null;
     lastKey.current = null;
@@ -220,7 +269,8 @@ export function useDraggable(kind: 'dock' | 'player', live?: LiveAnchor) {
     selfRef.current?.measureInWindow((x, y, w, h) => {
       pan.setValue({ x: from.cx - (x + w / 2), y: from.cy - (y + h / 2) });
       opacity.setValue(1);
-      Animated.spring(pan, { toValue: { x: 0, y: 0 }, friction: 7, tension: 90, useNativeDriver: USE_NATIVE }).start();
+      // Trượt về chỗ mới như vật có khối lượng: lò xo giảm chấn tới hạn, tới nơi là dừng (không vượt, không nảy)
+      Animated.spring(pan, { toValue: { x: 0, y: 0 }, stiffness: 140, damping: 24, mass: 1, overshootClamping: true, useNativeDriver: USE_NATIVE }).start();
     });
   }, [posKey]);
 

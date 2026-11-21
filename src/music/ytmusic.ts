@@ -47,7 +47,9 @@ export function getSession(log?: Log): Promise<Innertube> {
   if (!sessionPromise) {
     const t0 = Date.now();
     log?.('Đang tạo phiên Innertube...');
-    sessionPromise = Innertube.create()
+    // cache: lưu player đã phân tích vào file, lần mở app sau không phải phân tích lại
+    const { FileCache } = require('./ytCache') as typeof import('./ytCache');
+    sessionPromise = Innertube.create({ cache: new FileCache() })
       .then((yt) => {
         log?.(`Tạo phiên xong (${Date.now() - t0} ms)`);
         return yt;
@@ -86,31 +88,140 @@ export async function searchSongs(query: string, log?: Log): Promise<Song[]> {
 // Việc ghi lại client nào chạy được sẽ giúp biết nên giữ cách nào về sau.
 const CLIENTS = ['IOS', 'ANDROID', 'TV', 'YTMUSIC', 'WEB'] as const;
 
-export async function getAudio(videoId: string, log?: Log, muxed = false): Promise<AudioInfo> {  const yt = await getSession(log);
+// Chạy một việc nhưng không đợi quá ms: quá thì báo lỗi để chuyển sang cách khác (trước đây có client treo mãi → "Loading..." không dứt)
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const id = setTimeout(() => reject(new Error(`${what}: quá ${ms / 1000}s`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(id);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(id);
+        reject(e);
+      }
+    );
+  });
+}
+const CLIENT_TIMEOUT = 7000; // mỗi client tối đa 7 giây (lấy link + kiểm tra link)
+
+// Nhớ client nào lấy link thành công lần gần nhất, lần sau thử nó ĐẦU TIÊN.
+// Trước đây luôn thử theo thứ tự cố định: client đầu mà hỏng thì phải chờ nó hết thời gian (tới 7 giây) mới sang client sau,
+// nên bài đầu tiên sau khi mở app hay phát chậm
+const CLIENT_KEY = 'zyx:ytClient';
+let preferredClient: string | null = null;
+let preferredLoaded: Promise<void> | null = null;
+function loadPreferredClient() {
+  if (!preferredLoaded) {
+    preferredLoaded = (async () => {
+      try {
+        const AsyncStorage = (require('@react-native-async-storage/async-storage') as typeof import('@react-native-async-storage/async-storage')).default;
+        preferredClient = await AsyncStorage.getItem(CLIENT_KEY);
+      } catch {}
+    })();
+  }
+  return preferredLoaded;
+}
+function rememberClient(client: string) {
+  if (client === preferredClient) return;
+  preferredClient = client;
+  try {
+    const AsyncStorage = (require('@react-native-async-storage/async-storage') as typeof import('@react-native-async-storage/async-storage')).default;
+    AsyncStorage.setItem(CLIENT_KEY, client).catch(() => {});
+  } catch {}
+}
+
+// Lý do YouTube không cho phát (cần đăng nhập / bị nghi là bot / video bị chặn vùng...): "Streaming data not available"
+// không nói gì, nên hỏi thêm thông tin video để ghi vào nhật ký
+async function whyUnplayable(yt: Innertube, videoId: string): Promise<string> {
+  try {
+    const info = await withTimeout(yt.getBasicInfo(videoId, { client: 'IOS' } as any), 5000, 'hỏi lý do');
+    const ps: any = (info as any).playability_status;
+    if (!ps) return 'không rõ lý do';
+    return [ps.status, ps.reason, ps.error_screen?.subreason?.toString?.()].filter(Boolean).join(' · ') || 'không rõ lý do';
+  } catch (e) {
+    return `không hỏi được lý do (${String((e as Error)?.message ?? e).slice(0, 80)})`;
+  }
+}
+
+// Lấy link phát. Mọi client đều hỏng thì: ghi lý do YouTube đưa ra, tạo PHIÊN MỚI rồi thử lại một lần
+// (phiên cũ có thể đã bị YouTube từ chối — trước đây phải tắt mở app mới hết)
+export async function getAudio(videoId: string, log?: Log, muxed = false): Promise<AudioInfo> {
+  try {
+    return await getAudioOnce(videoId, log, muxed);
+  } catch (e1) {
+    let why = '';
+    try {
+      const yt = await getSession(log);
+      why = await whyUnplayable(yt, videoId);
+    } catch {}
+    // Bài đã bị xoá / để riêng tư / chặn bản quyền: thử lại vô ích (log 21/11 16:40: "LOGIN_REQUIRED · This video is private"
+    // → app thử thêm 7 client + tạo phiên mới mất mấy giây rồi vẫn báo lỗi). Báo ngay để trình phát chuyển bài.
+    // (KHÔNG tính "Sign in to confirm you're not a bot": đó là YouTube chặn tạm, tạo phiên mới có thể hết)
+    if (/private|removed|deleted|terminated|no longer available|not available|unavailable|copyright|riêng tư|bị xoá|không còn/i.test(why) && !/not a bot/i.test(why)) {
+      log?.(`YouTube trả lời: ${why}. Bài không còn phát được, không thử lại`);
+      throw Object.assign(new Error(`Bài không còn trên YouTube: ${why}`), { unavailable: true });
+    }
+    log?.(`YouTube trả lời: ${why}. Tạo phiên mới và thử lại...`);
+    sessionPromise = null;
+    try {
+      return await getAudioOnce(videoId, log, muxed);
+    } catch (e2) {
+      throw new Error(`${String((e2 as Error)?.message ?? e2)}\nYouTube trả lời: ${why}`);
+    }
+  }
+}
+
+async function getAudioOnce(videoId: string, log?: Log, muxed = false): Promise<AudioInfo> {
+  const [yt] = await Promise.all([withTimeout(getSession(log), 15000, 'tạo phiên'), loadPreferredClient()]);
   const errors: string[] = [];
 
-  for (const client of CLIENTS) {
+  // Lần 1: mọi client với chất lượng 360p. Lần 2 (bài không có bản 360p, ví dụ vài bài trong album): lấy bản tốt nhất có sẵn
+  const attempts: { client: (typeof CLIENTS)[number]; quality: string }[] = [
+    ...CLIENTS.map((client) => ({ client, quality: '360p' })),
+    ...(muxed ? (['IOS', 'ANDROID'] as const).map((client) => ({ client, quality: 'best' })) : []),
+  ];
+  // Client chạy được lần trước lên đầu (giữ nguyên thứ tự còn lại)
+  if (preferredClient) attempts.sort((a, b) => Number(b.client === preferredClient) - Number(a.client === preferredClient));
+  const start = Date.now();
+  for (const { client, quality } of attempts) {
+    if (Date.now() - start > 25000) break; // tổng cộng tối đa ~25 giây rồi báo lỗi
     const t0 = Date.now();
     try {
       // type 'audio' và format 'mp4' (mp4a): định dạng iPhone phát được. webm/opus thì iOS không phát.
-      const format = await yt.getStreamingData(
-        videoId,
-        muxed
-          ? { type: 'video+audio', quality: '360p', format: 'mp4', client }
-          : { type: 'audio', quality: 'best', format: 'mp4', client }
+      const format = await withTimeout(
+        yt.getStreamingData(
+          videoId,
+          muxed
+            ? { type: 'video+audio', quality, format: 'mp4', client }
+            : { type: 'audio', quality: 'best', format: 'mp4', client }
+        ),
+        CLIENT_TIMEOUT,
+        'lấy link'
       );
       const url = format.url;
       if (!url) throw new Error('không có url');
-      const probe = await fetch(url, { headers: { Range: 'bytes=0-1' } });
+      // Kiểm tra link có tải được không (lấy 2 byte đầu). Link treo thì bỏ sau vài giây
+      const ctrl = new AbortController();
+      const probe = await withTimeout(
+        fetch(url, { headers: { Range: 'bytes=0-1' }, signal: ctrl.signal }),
+        Math.max(2500, CLIENT_TIMEOUT - (Date.now() - t0)),
+        'kiểm tra link'
+      ).catch((e) => {
+        ctrl.abort();
+        throw e;
+      });
       log?.(`Client ${client}: kiểm tra link, HTTP ${probe.status}`);
       if (!probe.ok) throw new Error(`HTTP ${probe.status}`);
       const host = new URL(url).host;
       log?.(`Client ${client}: có link (${Date.now() - t0} ms), ${format.mime_type}`);
+      rememberClient(client);
       return { url, client, mime: format.mime_type, host };
     } catch (e) {
       const msg = String((e as Error)?.message ?? e).slice(0, 120);
-      log?.(`Client ${client}: lỗi - ${msg}`);
-      errors.push(`${client}: ${msg}`);
+      log?.(`Client ${client} (${quality}): lỗi - ${msg}`);
+      errors.push(`${client}/${quality}: ${msg}`);
     }
   }
   throw new Error('Không client nào lấy được link phát.\n' + errors.join('\n'));
@@ -211,9 +322,21 @@ export interface Shelf {
 
 export interface Collection {
   title: string;
-  subtitle: string;
+  subtitle: string; // ví dụ "EP • 2025" hoặc "Playlist • 50 bài"
   thumb?: string;
   songs: Song[];
+  // Nghệ sĩ / người tạo hiện dưới tên (ảnh tròn nhỏ + tên, bấm để mở trang nghệ sĩ)
+  owner?: { name: string; id?: string; thumb?: string };
+}
+
+// Người tạo / nghệ sĩ trong phần đầu trang album / playlist
+function ownerOf(h: any): Collection['owner'] {
+  const t = h?.strapline_text_one;
+  const name = str(t);
+  if (!name) return undefined;
+  const ep = t?.endpoint ?? t?.runs?.find((r: any) => r?.endpoint)?.endpoint;
+  const id: string | undefined = ep?.payload?.browseId;
+  return { name, id, thumb: lastThumb(h?.strapline_thumbnail) };
 }
 
 const CARD_KINDS: CardKind[] = ['song', 'video', 'album', 'playlist', 'artist'];
@@ -280,6 +403,136 @@ export async function getChartShelves(country = 'VN'): Promise<Shelf[]> {
   return toShelves(res?.contents_memo?.get('MusicCarouselShelf'));
 }
 
+// ---------- Thể loại & tâm trạng (Moods & genres của YouTube Music) ----------
+export interface Genre {
+  title: string;
+  params: string; // mã để mở trang của thể loại
+  color: string; // màu dải bên trái ô trên YouTube Music, dùng làm màu ô
+}
+export interface GenreGroup {
+  title: string; // ví dụ "Moods & moments", "Genres"
+  items: Genre[];
+}
+
+const txt = (t: any): string => (t?.runs ? t.runs.map((r: any) => r?.text ?? '').join('') : t?.simpleText ?? '');
+// Màu YouTube gửi dạng số ARGB (ví dụ 4282023999) → "#rrggbb"
+const argb = (n: any): string | null => (typeof n === 'number' ? '#' + (n & 0xffffff).toString(16).padStart(6, '0') : null);
+
+function genreOf(b: any): Genre | null {
+  const ep = b?.clickCommand?.browseEndpoint;
+  const title = txt(b?.buttonText);
+  if (!ep?.params || !title) return null;
+  return { title, params: ep.params, color: argb(b?.solid?.leftStripeColor) ?? '#555555' };
+}
+
+// Danh sách thể loại và tâm trạng. Đọc thẳng dữ liệu gốc (thư viện bỏ mất màu của ô)
+export async function getGenres(): Promise<GenreGroup[]> {
+  const yt = await getBrowseSession();
+  const res: any = await yt.actions.execute('/browse', { browseId: 'FEmusic_moods_and_genres', client: 'YTMUSIC' });
+  const data = res?.data ?? res;
+  const sections: any[] =
+    data?.contents?.singleColumnBrowseResultsTabRenderer?.tabs?.[0]?.tabRenderer?.content?.sectionListRenderer?.contents ?? [];
+  const groups: GenreGroup[] = [];
+  for (const s of sections) {
+    const g = s?.gridRenderer;
+    if (!g) continue;
+    const items = (g.items ?? []).map((i: any) => genreOf(i?.musicNavigationButtonRenderer)).filter(Boolean) as Genre[];
+    if (items.length) groups.push({ title: txt(g.header?.gridHeaderRenderer?.title), items });
+  }
+  // Cấu trúc khác dự kiến: gom hết các nút tìm được thành một nhóm
+  if (!groups.length) {
+    const found: Genre[] = [];
+    const walk = (o: any) => {
+      if (!o || typeof o !== 'object') return;
+      if (o.musicNavigationButtonRenderer) {
+        const g = genreOf(o.musicNavigationButtonRenderer);
+        if (g) found.push(g);
+        return;
+      }
+      for (const k in o) walk(o[k]);
+    };
+    walk(data);
+    if (found.length) groups.push({ title: '', items: found });
+  }
+  if (!groups.length) throw new Error('Không có thể loại');
+  return groups;
+}
+
+// Một ô playlist / album / nghệ sĩ dạng dữ liệu gốc (musicTwoRowItemRenderer)
+function rawCard(r: any): Card | null {
+  const ep = r?.navigationEndpoint?.browseEndpoint;
+  const id: string | undefined = ep?.browseId;
+  const flex = (i: number) => r?.flexColumns?.[i]?.musicResponsiveListItemFlexColumnRenderer?.text;
+  const title = txt(r?.title) || txt(flex(0));
+  if (!id || !title) return null;
+  const pageType: string = ep?.browseEndpointContextSupportedConfigs?.browseEndpointContextMusicConfig?.pageType ?? '';
+  const kind: CardKind | null =
+    pageType.includes('ALBUM') || id.startsWith('MPRE') ? 'album'
+    : pageType.includes('ARTIST') || id.startsWith('UC') ? 'artist'
+    : pageType.includes('PLAYLIST') || id.startsWith('VL') ? 'playlist'
+    : null;
+  if (!kind) return null;
+  const thumbs: any[] = (r?.thumbnailRenderer ?? r?.thumbnail)?.musicThumbnailRenderer?.thumbnail?.thumbnails ?? [];
+  return { kind, id: kind === 'playlist' ? id.replace(/^VL/, '') : id, title, subtitle: txt(r?.subtitle) || txt(flex(1)), thumb: thumbs[thumbs.length - 1]?.url };
+}
+
+// Tìm chữ tiêu đề đầu tiên trong phần header của một kệ (cấu trúc header mỗi loại kệ mỗi khác)
+function headerTitle(h: any): string {
+  if (!h || typeof h !== 'object') return '';
+  if (h.title && (h.title.runs || h.title.simpleText)) return txt(h.title);
+  for (const k in h) {
+    const v = headerTitle(h[k]);
+    if (v) return v;
+  }
+  return '';
+}
+
+// Đi khắp dữ liệu gốc, gom mọi danh sách có ô playlist / album (musicTwoRowItemRenderer) thành từng kệ.
+// Không phụ thuộc đường dẫn cố định nên YouTube đổi bố cục trang (một cột / hai cột, kệ thường / kệ ảnh lớn / lưới) vẫn đọc được
+function rawShelves(root: any): Shelf[] {
+  const out: Shelf[] = [];
+  const walk = (o: any) => {
+    if (!o || typeof o !== 'object') return;
+    if (Array.isArray(o)) return o.forEach(walk);
+    const list: any[] | undefined = Array.isArray(o.contents) ? o.contents : Array.isArray(o.items) ? o.items : undefined;
+    const itemOf = (i: any) => i?.musicTwoRowItemRenderer ?? i?.musicResponsiveListItemRenderer;
+    if (list && list.some(itemOf)) {
+      const cards = list.map((i) => rawCard(itemOf(i))).filter((c): c is Card => !!c);
+      if (cards.length) out.push({ title: headerTitle(o.header), cards });
+      return;
+    }
+    for (const k in o) walk(o[k]);
+  };
+  walk(root);
+  return out;
+}
+
+// Trang một thể loại: các kệ playlist (nổi bật, cộng đồng...) của thể loại đó.
+export async function getGenre(params: string): Promise<Shelf[]> {
+  const yt = await getBrowseSession();
+  const res: any = await yt.actions.execute('/browse', { browseId: 'FEmusic_moods_and_genres_category', params, client: 'YTMUSIC' });
+  const data = res?.data ?? res;
+  let shelves = rawShelves(data?.contents ?? data);
+  // Dự phòng: đọc qua thư viện
+  if (!shelves.length) {
+    try {
+      const parsed: any = await yt.actions.execute('/browse', { browseId: 'FEmusic_moods_and_genres_category', params, client: 'YTMUSIC', parse: true });
+      const memo = parsed?.contents_memo;
+      shelves = toShelves(memo?.get('MusicCarouselShelf'));
+      for (const g of (memo?.get('Grid') ?? []) as any[]) {
+        const cards = (g.items ?? []).map(toCard).filter((c: Card | null): c is Card => !!c);
+        if (cards.length) shelves.push({ title: str(g.header?.title) || '', cards });
+      }
+    } catch {}
+  }
+  if (!shelves.length) {
+    // In ra một đoạn dữ liệu để biết YouTube đang trả về gì (gửi đoạn log này để sửa)
+    console.warn('[genre] raw', JSON.stringify(data).slice(0, 1500));
+    throw new Error('Trang thể loại trống');
+  }
+  return shelves;
+}
+
 function songsFrom(items: any[] | undefined): Song[] {
   const out: Song[] = [];
   for (const n of items ?? []) {
@@ -305,7 +558,7 @@ export async function getCollection(kind: 'playlist' | 'album', id: string): Pro
     const thumb = lastThumb(h?.thumbnail);
     // Bài trong album thường không có ảnh riêng: dùng ảnh album
     const songs = songsFrom(a.contents).map((s) => ({ ...s, thumb: s.thumb ?? thumb, album: s.album ?? str(h?.title) }));
-    return { title: str(h?.title), subtitle: str(h?.subtitle) || str(h?.strapline_text_one), thumb, songs };
+    return { title: str(h?.title), subtitle: str(h?.subtitle), thumb, songs, owner: ownerOf(h) };
   }
   const p: any = await yt.music.getPlaylist(id);
   const h = p.header;
@@ -322,14 +575,15 @@ export async function getCollection(kind: 'playlist' | 'album', id: string): Pro
   }
   return {
     title: str(h?.title),
-    subtitle: str(h?.subtitle) || str(h?.strapline_text_one) || str(h?.second_subtitle),
+    subtitle: str(h?.subtitle) || str(h?.second_subtitle),
     thumb: lastThumb(h?.thumbnail),
     songs,
+    owner: ownerOf(h),
   };
 }
 
 // ---------- Tìm kiếm theo loại: Tất cả / Bài hát / Album / Nghệ sĩ ----------
-export type SearchKind = 'all' | 'song' | 'album' | 'artist';
+export type SearchKind = 'all' | 'song' | 'album' | 'artist' | 'youtube'; // youtube: video thường trên YouTube (mix, remix tổng hợp...)
 export interface SearchResults {
   top?: Card; // "Kết quả hàng đầu" của YouTube Music (thường đúng nhất)
   songs: Song[]; // bài hát chính thức
@@ -414,9 +668,71 @@ async function searchFiltered(yt: Innertube, query: string, type: 'song' | 'vide
   }
 }
 
+// Mã video trong link YouTube (youtube.com/watch?v=, youtu.be/, /shorts/, music.youtube.com...) hoặc mã 11 ký tự
+export function youtubeId(text: string): string | null {
+  const q = text.trim();
+  const m = q.match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|live\/|embed\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+
+// Một video YouTube thường → Song (chỉ lấy tiếng + ảnh khi phát, không lấy hình)
+function videoSong(v: any): Song | null {
+  // Video (kiểu cũ) có video_id; LockupView (kiểu mới của YouTube) có content_id + metadata.title
+  const id: string | undefined = v?.video_id ?? v?.content_id ?? v?.id;
+  if (!id || typeof id !== 'string' || id.length !== 11) return null;
+  if (v?.content_type && v.content_type !== 'VIDEO') return null;
+  const title = v.title?.toString?.() ?? v.title?.text ?? v.metadata?.title?.toString?.() ?? '';
+  if (!title) return null;
+  const secs = Number(v.duration?.seconds ?? 0);
+  return {
+    id,
+    title,
+    artist: v.author?.name ?? v.short_byline_text?.toString?.() ?? 'YouTube',
+    duration: Number.isFinite(secs) && secs > 0 ? secs : undefined,
+    thumb: `https://i.ytimg.com/vi/${id}/mqdefault.jpg`,
+  };
+}
+
+// Tìm video trên YouTube thường (không phải YouTube Music). Dán link thì trả về đúng video đó (đứng đầu)
+async function searchYouTube(yt: Innertube, query: string, out: SearchResults) {
+  const id = youtubeId(query);
+  const seen = new Set<string>();
+  const add = (list: any[]) => {
+    for (const v of list) {
+      const sng = videoSong(v);
+      if (sng && !seen.has(sng.id)) {
+        seen.add(sng.id);
+        out.videos.push(sng);
+      }
+    }
+  };
+  let res: any = await yt.search(id ?? query, { type: 'video' });
+  add(res.videos ?? []);
+  if (id) {
+    // Video của link lên đầu; tìm không ra thì vẫn cho phát bằng mã video
+    const k = out.videos.findIndex((x) => x.id === id);
+    if (k > 0) out.videos.unshift(out.videos.splice(k, 1)[0]);
+    else if (k < 0) out.videos.unshift({ id, title: 'YouTube video', artist: 'YouTube', thumb: `https://i.ytimg.com/vi/${id}/mqdefault.jpg` });
+    return;
+  }
+  for (let i = 0; i < 2 && res?.has_continuation; i++) {
+    try {
+      res = await res.getContinuation();
+      add(res.videos ?? []);
+    } catch {
+      break;
+    }
+  }
+  if (!out.videos.length) throw new Error('Không tìm được');
+}
+
 export async function searchMusic(query: string, kind: SearchKind): Promise<SearchResults> {
   const out: SearchResults = { songs: [], videos: [], albums: [], artists: [] };
   const yt = await getBrowseSession();
+  if (kind === 'youtube') {
+    await searchYouTube(yt, query, out);
+    return out;
+  }
   if (kind === 'song') {
     // Bài hát và video ca nhạc tìm song song: nhiều bài chỉ có trên YouTube dưới dạng video
     await Promise.all([
@@ -462,5 +778,56 @@ export async function getArtist(id: string): Promise<ArtistPage> {
     thumb,
     songs: songsFrom(songShelf?.contents).slice(0, 10),
     shelves: toShelves(sections),
+  };
+}
+
+// ---------- Lời có giờ của chính YouTube Music ----------
+// YouTube Music có lời chạy theo thời gian (từ LyricFind / Musixmatch) gắn đúng vào từng video.
+// Cách lấy (giống thư viện ytmusicapi):
+//  1. /next của bài → tìm mã trang lời (browseId bắt đầu bằng "MPLYt")
+//  2. /browse trang lời đó bằng client của app YouTube Music trên Android → có thêm mốc thời gian từng dòng
+// Bài không có lời có giờ thì trả về lời thường (nếu có), hoặc null.
+export interface YTLyrics {
+  synced: boolean;
+  lines: { t: number | null; text: string }[];
+  source: string;
+}
+
+export async function getYTLyrics(videoId: string): Promise<YTLyrics | null> {
+  const yt = await getBrowseSession();
+  const next: any = await yt.actions.execute('/next', { videoId, client: 'YTMUSIC' });
+  const m = JSON.stringify(next?.data ?? {}).match(/"browseId":"(MPLYt[^"]+)"/);
+  if (!m) return null;
+
+  const client: any = (yt.session as any).context?.client ?? {};
+  const res = await fetch('https://music.youtube.com/youtubei/v1/browse?prettyPrint=false', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(client.visitorData ? { 'X-Goog-Visitor-Id': client.visitorData } : {}) },
+    body: JSON.stringify({
+      context: {
+        client: {
+          clientName: 'ANDROID_MUSIC',
+          clientVersion: '7.21.50',
+          hl: client.hl ?? 'en',
+          gl: client.gl ?? 'US',
+          ...(client.visitorData ? { visitorData: client.visitorData } : {}),
+        },
+      },
+      browseId: m[1],
+    }),
+  });
+  if (!res.ok) return null;
+  const d: any = await res.json();
+  const data = d?.contents?.elementRenderer?.newElement?.type?.componentType?.model?.timedLyricsModel?.lyricsData;
+  const raw: any[] | undefined = data?.timedLyricsData;
+  if (!Array.isArray(raw) || !raw.length) return null;
+  const timed = raw.every((x) => x?.cueRange?.startTimeMilliseconds != null);
+  return {
+    synced: timed,
+    lines: raw.map((x) => ({
+      t: timed ? Number(x.cueRange.startTimeMilliseconds) / 1000 : null,
+      text: String(x?.lyricLine ?? '').trim(),
+    })),
+    source: String(data?.sourceMessage ?? 'YouTube Music'),
   };
 }

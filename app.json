@@ -1,22 +1,41 @@
 {
   "expo": {
-    "name": "zyx",
+    "name": "Zyx",
     "slug": "zyx",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "bundleIdentifier": "com.henrywizzrd.zyx",
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "audio"
+        ],
+        "ITSAppUsesNonExemptEncryption": false,
+        "CADisableMinimumFrameDurationOnPhone": true
+      }
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#2B1B13",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.henrywizzrd.zyx",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -24,12 +43,46 @@
     "plugins": [
       "expo-audio",
       [
+        "react-native-audio-api",
+        {
+          "iosBackgroundMode": true,
+          "androidForegroundService": false,
+          "androidPermissions": []
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "ZYX cần truy cập ảnh để bạn chọn ảnh đại diện và ảnh bìa cho profile.",
           "cameraPermission": "ZYX cần dùng camera để bạn chụp ảnh đại diện và ảnh bìa cho profile."
         }
+      ],
+      [
+        "@sentry/react-native/expo",
+        {
+          "url": "https://de.sentry.io/",
+          "organization": "zyx-sg",
+          "project": "react-native"
+        }
       ]
-    ]
+    ],
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0,
+      "requestHeaders": {
+        "expo-channel-name": "preview"
+      },
+      "url": "https://u.expo.dev/7f4dcbef-7a9b-43e4-8cd6-6b6674c0ad03"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "7f4dcbef-7a9b-43e4-8cd6-6b6674c0ad03"
+      }
+    },
+    "owner": "tysonneee",
+    "scheme": "zyx"
   }
 }

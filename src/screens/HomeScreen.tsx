@@ -1,20 +1,36 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Image, PixelRatio, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { useRenderProbe } from '../components/JankMonitor';
+import { SplitPane } from '../components/SplitPane';
+import { GlassFill, glassShadow } from '../components/Glass';
+import { ScalePressable } from '../components/PressScale';
+import { Stagger } from '../components/Stagger';
+import { loadTrendingSummed, trendingId } from '../data/trending';
+import { PostCard } from '../components/PostCard';
+import { feedKey, useFeed } from '../components/FeedList';
+import RNMaskedView from '@react-native-masked-view/masked-view';
+import { LinearGradient } from 'expo-linear-gradient';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+const MaskedView = RNMaskedView as unknown as React.ComponentType<any>;
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Image, PixelRatio, Pressable, RefreshControl, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import Animated, { Easing, FadeOut, useAnimatedScrollHandler, useAnimatedStyle, useReducedMotion, useSharedValue, withDelay, withSpring, withTiming } from 'react-native-reanimated';
+import { useDockCollapse } from '../components/dockCollapse';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeProvider';
 import { useContentInsets } from '../components/FloatingDock';
-import { usePlayer } from '../player/PlayerProvider';
+import { usePlayerPick } from '../player/PlayerProvider';
 import { useSongMenu } from '../components/useSongMenu';
 import { useNav } from '../nav/Nav';
 import { musicSupported, toTrack, ytmusic } from '../music/lazy';
 import type { Card, Shelf } from '../music/ytmusic';
-import type { HomeSection, TrendingRange } from '../theme/types';
+import type { HomeSection, TrendingRange, TrendingRegion } from '../theme/types';
 import type { Track } from '../data/mock';
 import { useT } from '../i18n';
 import { SmartImage } from '../components/Cover';
-import { cacheGet, cacheSet, createPlaylist, getPlaylists, getRecent, getTopArtists, RecentItem, useDbVersion } from '../data/db';
+import { checkNetwork, useOffline } from '../data/net';
+import { cacheGet, cacheSet, createPlaylist, getDownloadedTracks, getPlaylists, getRecent, getTopArtists, RecentItem, useDbVersion } from '../data/db';
 
 const PAD = 16;
+type ScrollViewRef = React.ComponentRef<typeof ScrollView>;
 const CARD = 148;
 
 
@@ -31,7 +47,7 @@ function once<T>(key: string, load: () => Promise<T>): Promise<T> {
   remote.set(key, { at: Date.now(), p });
   return p;
 }
-const charts = () => once('charts', () => ytmusic().getChartShelves('VN'));
+const charts = (region: TrendingRegion) => once(`charts:${region}`, () => ytmusic().getChartShelves(region));
 const homeFeed = () => once('home', () => ytmusic().getHomeShelves());
 const explore = () => once('explore', () => ytmusic().getExploreShelves());
 
@@ -79,11 +95,29 @@ const RANGE_MATCH: Record<TrendingRange, RegExp> = {
   month: /month|tháng|monthly/i,
   year: /year|năm|yearly|20\d\d/i,
 };
-async function loadTrending(range: TrendingRange): Promise<{ title: string; playlistId?: string; songs: Track[] } | null> {
-  const shelves = await charts();
+type TrendingData = { title: string; playlistId?: string; songs: Track[]; gathering?: { have: number; need: number } };
+async function loadTrending(range: TrendingRange, region: TrendingRegion): Promise<TrendingData | null> {
+  if (range !== 'week') {
+    const r = await loadTrendingSummed(range, region);
+    return r && { title: '', playlistId: trendingId(region, range), ...r };
+  }
+  // Tuần: ưu tiên bảng "Top songs" của YouTube Charts server đã lưu; chưa có thì lấy từ trang Charts của YouTube Music
+  try {
+    const r = await loadTrendingSummed('week', region);
+    if (r?.songs.length) return { title: '', playlistId: trendingId(region, 'week'), songs: r.songs };
+  } catch (e) {
+    console.warn('[trending] week', e);
+  }
+  const shelves = await charts(region);
   const cards = shelves.flatMap((s) => s.cards.map((c) => ({ ...c, shelf: s.title })));
   const lists = cards.filter((c) => c.kind === 'playlist');
-  const pick = lists.find((c) => RANGE_MATCH[range].test(`${c.title} ${c.subtitle} ${c.shelf}`)) ?? (range === 'week' ? lists[0] : undefined);
+  // Chọn đúng bảng BÀI HÁT (trang Charts còn có Top video, Top live performances...): bài hát được cộng điểm, video / live bị trừ
+  const score = (c: (typeof lists)[number]) => {
+    const txt = `${c.title} ${c.subtitle} ${c.shelf}`;
+    return (/songs?|bài hát/i.test(txt) ? 3 : 0) + (RANGE_MATCH[range].test(txt) ? 1 : 0) - (/video|live|performance|shorts?|trending/i.test(txt) ? 5 : 0);
+  };
+  const best = [...lists].sort((a, b) => score(b) - score(a))[0];
+  const pick = best && score(best) > 0 ? best : lists.find((c) => !/video|live|performance/i.test(`${c.title} ${c.shelf}`));
   if (pick) {
     const col = await ytmusic().getCollection('playlist', pick.id);
     return { title: pick.title, playlistId: pick.id, songs: col.songs.slice(0, 50).map(toTrack) };
@@ -99,6 +133,64 @@ async function loadTrending(range: TrendingRange): Promise<{ title: string; play
 // ---------------------------------------------------------------------------
 // Thành phần giao diện
 // ---------------------------------------------------------------------------
+// Bảng tin: bài đăng mới nhất của mọi người (cả người mình theo dõi lẫn chưa theo dõi), mới nhất trước.
+// Thích / bình luận ngay trong bảng tin, bấm tên / avatar để mở hồ sơ người đó
+// Bảng tin trên Home: một khung cao vừa phải chứa khoảng 5 bài mới nhất, cuộn bên trong khung.
+// Mép trên / dưới của khung mờ dần (nội dung tan dần chứ không cắt thành đường), không có thanh cuộn.
+// Muốn xem bài mới: kéo xuống ở đầu khung để làm mới, hoặc bấm >> để mở bảng tin đầy đủ
+const FEED_BOX_H = 460;
+function Feed() {
+  const { theme } = useTheme();
+  const t = useT();
+  const { push } = useNav();
+  const { posts, error, refreshing, refresh } = useFeed(5);
+  const { textSecondary, accent } = theme.colors;
+  const fade = (
+    <LinearGradient
+      colors={['transparent', '#000', '#000', 'transparent']}
+      locations={[0, 0.07, 0.9, 1]}
+      style={{ flex: 1 }}
+    />
+  );
+  return (
+    <>
+      <SectionTitle
+        title={t('home.section.feed')}
+        right={
+          <Pressable onPress={() => push({ type: 'feed' })} hitSlop={10}>
+            <MaterialCommunityIcons name="chevron-double-right" size={28} color={textSecondary} />
+          </Pressable>
+        }
+      />
+      {posts === null ? (
+        error ? (
+          <Pressable onPress={() => refresh()}>
+            <Text style={{ color: textSecondary }}>{t('community.loadFailed')}</Text>
+            <Text style={{ color: textSecondary, fontSize: 12, marginTop: 4, opacity: 0.7 }}>{error}</Text>
+          </Pressable>
+        ) : (
+          <ActivityIndicator color={accent} style={{ marginVertical: 16 }} />
+        )
+      ) : posts.length === 0 ? (
+        <Text style={{ color: textSecondary }}>{t('community.feedEmpty')}</Text>
+      ) : (
+        <MaskedView style={{ maxHeight: FEED_BOX_H }} maskElement={fade}>
+          <ScrollView
+            nestedScrollEnabled
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingVertical: 14 }}
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => refresh(true)} tintColor={accent} colors={[accent]} />}
+          >
+            {posts.map((p, i) => (
+              <PostCard key={feedKey(p)} post={p} showDivider={i < posts.length - 1} />
+            ))}
+          </ScrollView>
+        </MaskedView>
+      )}
+    </>
+  );
+}
+
 function SectionTitle({ title, right }: { title: string; right?: React.ReactNode }) {
   const { theme } = useTheme();
   return (
@@ -116,7 +208,7 @@ function CoverCard({ title, subtitle, thumb, round, onPress, onLongPress, icon }
   const { theme } = useTheme();
   const r = round ? CARD / 2 : 8;
   return (
-    <Pressable onPress={onPress} onLongPress={onLongPress} style={{ width: CARD }}>
+    <ScalePressable onPress={onPress} onLongPress={onLongPress} style={{ width: CARD }}>
       {thumb ? (
         // Xin ảnh đúng cỡ hiển thị thật trên màn hình (CARD × mật độ điểm ảnh, iPhone là ×3).
         // Ảnh bài hát lưu từ kết quả tìm kiếm chỉ có 120px nên phóng lên 148pt sẽ bị mờ
@@ -134,13 +226,13 @@ function CoverCard({ title, subtitle, thumb, round, onPress, onLongPress, icon }
       {!!subtitle && (
         <Text numberOfLines={2} style={{ color: theme.colors.textSecondary, fontSize: 12, textAlign: round ? 'center' : 'left' }}>{subtitle}</Text>
       )}
-    </Pressable>
+    </ScalePressable>
   );
 }
 
-function HRow({ children }: { children: React.ReactNode }) {
+function HRow({ children, scrollRef }: { children: React.ReactNode; scrollRef?: React.RefObject<ScrollViewRef | null> }) {
   return (
-    <ScrollView horizontal bounces={false} overScrollMode="never" showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingHorizontal: PAD }} style={{ marginHorizontal: -PAD }}>
+    <ScrollView ref={scrollRef} horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingHorizontal: PAD }} style={{ marginHorizontal: -PAD }}>
       {children}
     </ScrollView>
   );
@@ -163,10 +255,50 @@ function Skeleton() {
 function Failed({ onRetry, text }: { onRetry: () => void; text?: string }) {
   const { theme } = useTheme();
   const t = useT();
+  const offline = useOffline();
+  // tải lỗi: xem có phải do mất mạng không (mất mạng thì báo rõ, có mạng lại là tự tải lại được)
+  useEffect(() => {
+    checkNetwork();
+  }, []);
   return (
     <Pressable onPress={onRetry} style={{ paddingVertical: 10 }}>
-      <Text style={{ color: theme.colors.textSecondary, fontSize: 14 }}>{text ?? t('common.loadFailed')}</Text>
+      <Text style={{ color: theme.colors.textSecondary, fontSize: 14 }}>{offline ? t('offline.section') : text ?? t('common.loadFailed')}</Text>
     </Pressable>
+  );
+}
+
+// Offline: mục "Nhạc đã tải" hiện đầu Home — bấm là phát ngay từ file trong máy
+function Downloaded() {
+  const { theme } = useTheme();
+  const t = useT();
+  useDbVersion();
+  const { playTrack } = usePlayerPick('playTrack');
+  const list = getDownloadedTracks(50);
+  const { text, textSecondary, surface } = theme.colors;
+  return (
+    <View>
+      <SectionTitle title={t('offline.downloaded')} />
+      {list.length === 0 ? (
+        <Text style={{ color: textSecondary, fontSize: 14, paddingVertical: 6 }}>{t('offline.none')}</Text>
+      ) : (
+        list.slice(0, 12).map((s) => (
+          <Pressable
+            key={s.id}
+            onPress={() => playTrack(s, list, { kind: 'mix', id: 'downloads', title: t('offline.downloaded') })}
+            style={styles.rankRow}
+          >
+            <View style={[styles.rankThumb, { backgroundColor: surface, overflow: 'hidden' }]}>
+              {s.thumb ? <SmartImage url={s.thumb} size={120} style={StyleSheet.absoluteFill} /> : null}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text numberOfLines={1} style={{ color: text, fontSize: 15, fontWeight: '600' }}>{s.title}</Text>
+              <Text numberOfLines={1} style={{ color: textSecondary, fontSize: 13, marginTop: 2 }}>{s.artist}</Text>
+            </View>
+            <Ionicons name="arrow-down-circle" size={18} color={theme.colors.accent} />
+          </Pressable>
+        ))
+      )}
+    </View>
   );
 }
 
@@ -180,10 +312,11 @@ function MyPlaylists() {
   const dbv = useDbVersion();
   const lists = useMemo(() => getPlaylists().slice(0, 7), [dbv]);
   const chip = (key: string, title: string, onPress: () => void, cover: React.ReactNode) => (
-    <Pressable key={key} onPress={onPress} style={[styles.chip, { backgroundColor: theme.colors.surface }]}>
+    <ScalePressable key={key} onPress={onPress} outerStyle={{ width: '48.8%' }} style={[styles.chip, { width: '100%' }, glassShadow(0.8, theme.colors.glassTint !== 'dark')]}>
+      <GlassFill radius={CHIP_R} solid={0.5} slab />
       {cover}
       <Text numberOfLines={2} style={[styles.chipTitle, { color: theme.colors.text }]}>{title}</Text>
-    </Pressable>
+    </ScalePressable>
   );
   const iconCover = (name: keyof typeof Ionicons.glyphMap, bg: string, fg = '#FFFFFF') => (
     <View style={[styles.chipCover, { backgroundColor: bg, alignItems: 'center', justifyContent: 'center' }]}>
@@ -220,7 +353,7 @@ function MyPlaylists() {
 function useOpenContext() {
   const t = useT();
   const { push } = useNav();
-  const { playTrack } = usePlayer();
+  const { playTrack } = usePlayerPick('playTrack');
   const startMix = (seed: Track, title: string) => {
     if (!musicSupported) return;
     // Phát bài gốc ngay, phần còn lại của mix nối vào khi tải xong
@@ -237,7 +370,10 @@ function useOpenContext() {
     if (r.kind === 'search' && r.track) return playTrack(r.track);
     if (r.kind === 'liked') return push({ type: 'collection', source: 'liked', kind: 'playlist', id: 'liked', title: t('home.liked') });
     if (r.kind === 'local') return push({ type: 'collection', source: 'local', kind: 'playlist', id: r.id, title: r.title, thumb: r.thumb });
+    if (r.kind === 'shared') return push({ type: 'collection', source: 'shared', kind: 'playlist', id: r.id, title: r.title, thumb: r.thumb });
     if (r.kind === 'album') return push({ type: 'collection', source: 'yt', kind: 'album', id: r.id, title: r.title, thumb: r.thumb });
+    if (r.kind === 'chart' && r.id.startsWith('trending:')) return push({ type: 'collection', source: 'trending', kind: 'playlist', id: r.id, title: r.title });
+    if (r.kind === 'chart' && r.id === 'chart') return; // danh sách cũ không mở lại được
     if (r.kind === 'playlist' || r.kind === 'chart') return push({ type: 'collection', source: 'yt', kind: 'playlist', id: r.id, title: r.title, thumb: r.thumb });
     if (r.kind === 'artist') return push({ type: 'artist', id: r.id, name: r.title, thumb: r.thumb });
     if (r.kind === 'mix') return startMix({ id: r.id, title: r.title, artist: '', color: '#2A2A2A', duration: 0, thumb: r.thumb }, r.title);
@@ -245,21 +381,91 @@ function useOpenContext() {
   return { open, startMix };
 }
 
-function Recent() {
+// list: màn hình ngang — xếp dọc thành các ô giống "Playlist của tôi" thay vì hàng trượt ngang
+// Danh sách ĐỨNG YÊN trong lúc dùng app: bấm một mục cũ (mục đó được đưa lên đầu trong dữ liệu) thì hàng không bị
+// xếp lại, không bị giật về đầu nữa. Chỉ làm mới khi bấm nút ↻ cạnh tiêu đề, hoặc lần mở app sau.
+// Có mục mới chưa hiện thì nút ↻ sáng màu nhấn
+function Recent({ list }: { list?: boolean }) {
   const { theme } = useTheme();
   const t = useT();
   const dbv = useDbVersion();
-  const items = useMemo(() => getRecent(12), [dbv]);
+  const [ver, setVer] = useState(0);
+  const items = useMemo(() => getRecent(12), [ver]); // eslint-disable-line react-hooks/exhaustive-deps
+  const latest = useMemo(() => getRecent(12), [dbv]);
+  const sig = (l: RecentItem[]) => l.map((r) => `${r.kind}:${r.id}`).join('|');
+  const stale = sig(latest) !== sig(items);
+  // Chưa có mục nào thì hiện ngay khi có (không bắt bấm ↻ cho lần đầu)
+  useEffect(() => {
+    if (!items.length && latest.length) setVer((v) => v + 1);
+  }, [latest]); // eslint-disable-line react-hooks/exhaustive-deps
+  const rowRef = useRef<ScrollViewRef>(null);
+  const spin = useSharedValue(0);
+  const spinStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${spin.value * 360}deg` }] }));
+  const reload = () => {
+    spin.value = 0;
+    spin.value = withTiming(1, { duration: 500 });
+    setVer((v) => v + 1);
+    rowRef.current?.scrollTo({ x: 0, animated: true });
+  };
   const { open } = useOpenContext();
+  const head = (
+    <SectionTitle
+      title={t('home.section.recent')}
+      right={
+        items.length ? (
+          <Pressable onPress={reload} hitSlop={10} style={styles.editBtn}>
+            <GlassFill radius={19} solid={0.35} slab />
+            <Animated.View style={spinStyle}>
+              <Ionicons name="refresh" size={20} color={theme.colors.text} />
+            </Animated.View>
+            {stale && <View style={[styles.staleDot, { backgroundColor: theme.colors.accent }]} />}
+          </Pressable>
+        ) : undefined
+      }
+    />
+  );
   if (!items.length) {
-    return <Text style={{ color: theme.colors.textSecondary, fontSize: 14 }}>{t('home.recentEmpty')}</Text>;
+    return (
+      <>
+        {head}
+        <Text style={{ color: theme.colors.textSecondary, fontSize: 14 }}>{t('home.recentEmpty')}</Text>
+      </>
+    );
   }
   const label: Record<string, string> = {
-    search: t('kind.song'), liked: t('kind.playlist'), local: t('kind.playlist'), playlist: t('kind.playlist'),
+    search: t('kind.song'), liked: t('kind.playlist'), local: t('kind.playlist'), shared: t('kind.playlist'), playlist: t('kind.playlist'),
     album: t('kind.album'), chart: t('kind.chart'), mix: t('kind.mix'), artist: t('kind.artist'),
   };
+  // Màn hình ngang: ảnh bìa to, 2 cột, trải dọc xuống (giống lưới trong Thư viện)
+  if (list) {
+    return (
+      <>
+      {head}
+      <View style={styles.grid}>
+        {items.map((r) => (
+          <Pressable key={`${r.kind}:${r.id}`} onPress={() => open(r)} style={({ pressed }) => [styles.bigItem, pressed && { opacity: 0.7 }]}>
+            {r.kind !== 'liked' && r.thumb ? (
+              // Ảnh nét theo cỡ ô to (ảnh nhỏ của hàng trượt ngang phóng lên bị mờ)
+              <SmartImage url={r.thumb} size={600} style={[styles.bigCover, r.kind === 'artist' && { borderRadius: 999 }]} />
+            ) : (
+              <View style={[styles.bigCover, { backgroundColor: r.kind === 'liked' ? '#5B3CC4' : theme.colors.skeleton, alignItems: 'center', justifyContent: 'center' }]}>
+                <Ionicons name={r.kind === 'liked' ? 'heart' : 'musical-notes'} size={44} color={r.kind === 'liked' ? '#FFFFFF' : theme.colors.textSecondary} />
+              </View>
+            )}
+            <Text numberOfLines={1} style={{ color: theme.colors.text, fontSize: 15, fontWeight: '700', marginTop: 8 }}>{r.kind === 'liked' ? t('home.liked') : r.title}</Text>
+            <Text numberOfLines={1} style={{ color: theme.colors.textSecondary, fontSize: 13, marginTop: 2 }}>
+              {r.kind === 'search' ? r.track?.artist ?? label[r.kind] : label[r.kind]}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+      </>
+    );
+  }
   return (
-    <HRow>
+    <>
+    {head}
+    <HRow scrollRef={rowRef}>
       {items.map((r) => (
         <CoverCard
           key={`${r.kind}:${r.id}`}
@@ -271,18 +477,50 @@ function Recent() {
         />
       ))}
     </HRow>
+    </>
   );
 }
 
 function Trending() {
   const { theme, setHome } = useTheme();
   const t = useT();
-  const { track, playTrack } = usePlayer();
+  const { track, playTrack } = usePlayerPick('track', 'playTrack');
   const songMenu = useSongMenu();
   const { push } = useNav();
   const range = theme.home.trendingRange;
-  const r = useRemote(`trending:${range}`, () => once(`trending:${range}`, () => loadTrending(range)), true, 6 * 60 * 60 * 1000);
-  const { text, textSecondary, accent, surface } = theme.colors;
+  const region = theme.home.trendingRegion;
+  const key = `trending:${region}:${range}`;
+  const r = useRemote(key, () => once(key, () => loadTrending(range, region)), true, 6 * 60 * 60 * 1000);
+  const { text, textSecondary, accent, surface, border } = theme.colors;
+  const regionName = (k: TrendingRegion) => t(`home.region.${k}`);
+  // Ô chọn khu vực: bấm vào thì trải xuống danh sách (Toàn cầu / Việt Nam / Hàn Quốc / Mỹ)
+  const [regionOpen, setRegionOpen] = useState(false);
+  const regionBox = (
+    <Pressable onPress={() => setRegionOpen((v) => !v)} style={[styles.regionBox, { backgroundColor: surface, borderColor: border }]}>
+      <Ionicons name="globe-outline" size={14} color={textSecondary} />
+      <Text style={{ color: text, fontSize: 13, fontWeight: '700' }}>{regionName(region)}</Text>
+      <Ionicons name={regionOpen ? 'chevron-up' : 'chevron-down'} size={14} color={textSecondary} />
+    </Pressable>
+  );
+  const regionList = regionOpen && (
+    // Nổi lên trên danh sách (không đẩy danh sách xuống): mọc ra từ góc của ô chọn, tấm kính có bóng đổ
+    <Animated.View entering={popIn} exiting={FadeOut.duration(120)} style={[styles.regionList, { backgroundColor: theme.colors.surface, borderColor: border, borderWidth: StyleSheet.hairlineWidth }, glassShadow(1, theme.colors.glassTint !== 'dark')]}>
+      {/* nền đặc (không trong suốt): bảng chọn nằm đè lên danh sách, trong suốt thì chữ hai lớp chồng lên nhau */}
+      {(['ZZ', 'VN', 'KR', 'US'] as TrendingRegion[]).map((k) => (
+        <Pressable
+          key={k}
+          onPress={() => {
+            setHome({ trendingRegion: k });
+            setRegionOpen(false);
+          }}
+          style={({ pressed }) => [styles.regionRow, pressed && { backgroundColor: border }]}
+        >
+          <Text style={{ flex: 1, color: k === region ? accent : text, fontSize: 15, fontWeight: k === region ? '800' : '600' }}>{regionName(k)}</Text>
+          {k === region && <Ionicons name="checkmark" size={18} color={accent} />}
+        </Pressable>
+      ))}
+    </Animated.View>
+  );
 
   const chips = (
     <View style={{ flexDirection: 'row', gap: 6 }}>
@@ -295,11 +533,15 @@ function Trending() {
   );
 
   const data = r.data;
-  const chartTitle = data ? data.title || t('home.topWeekSongs') : '';
+  const chartTitle = data ? data.title || t(range === 'month' ? 'home.topMonthSongs' : range === 'year' ? 'home.topYearSongs' : 'home.topWeekSongs') : '';
   const ctx = data ? { kind: 'chart' as const, id: data.playlistId ?? 'chart', title: chartTitle } : null;
   return (
     <View>
       <SectionTitle title={t('home.section.trending')} right={chips} />
+      <View style={{ alignItems: 'flex-start', marginBottom: 8, zIndex: 20, elevation: 20 }}>
+        {regionBox}
+        {regionList}
+      </View>
       {r.status === 'loading' &&
         // Khung chờ đúng hình dạng danh sách, đỡ trống trơn
         [0, 1, 2, 3, 4].map((i) => (
@@ -315,15 +557,21 @@ function Trending() {
       {r.status === 'error' && <Failed onRetry={r.retry} />}
       {r.status === 'done' && !data && (
         <Text style={{ color: textSecondary, fontSize: 14 }}>
-          {t('home.trendingNone', { range: t(range === 'month' ? 'home.rangeWord.month' : 'home.rangeWord.year') })}
+          {t('home.trendingNone', { range: t(range === 'month' ? 'home.rangeWord.month' : 'home.rangeWord.year'), region: regionName(region) })}
         </Text>
       )}
       {data && (
         <>
-          <Text style={{ color: textSecondary, fontSize: 13, marginBottom: 6 }}>{t('home.trendingSource', { title: chartTitle })}</Text>
+          <Text style={{ color: textSecondary, fontSize: 13, marginBottom: 6 }}>
+            {range === 'week'
+              ? t('home.trendingSource', { title: chartTitle, region: regionName(region) })
+              : t('home.trendingSummed', { title: chartTitle, region: regionName(region) })}
+            {data.gathering ? ` • ${t('home.trendingGathering', { have: data.gathering.have, need: data.gathering.need })}` : ''}
+          </Text>
           {data.songs.slice(0, 10).map((s, i) => (
+            <Stagger key={`${s.id}:${i}:${region}:${range}`} i={i}>
             <Pressable
-              key={`${s.id}:${i}`}
+              testID={`trending-${i}`}
               onPress={() => playTrack(s, data.songs, ctx!)}
               onLongPress={() => songMenu(s)}
               style={styles.rankRow}
@@ -334,11 +582,17 @@ function Trending() {
                 <Text numberOfLines={1} style={{ color: s.id === track.id ? accent : text, fontSize: 15, fontWeight: '600' }}>{s.title}</Text>
                 <Text numberOfLines={1} style={{ color: textSecondary, fontSize: 13 }}>{s.artist}</Text>
               </View>
+              <Pressable onPress={() => songMenu(s)} hitSlop={12} style={{ paddingLeft: 6 }}>
+                <Ionicons name="ellipsis-horizontal" size={20} color={textSecondary} />
+              </Pressable>
             </Pressable>
+            </Stagger>
           ))}
           {data.playlistId && (
             <Pressable
-              onPress={() => push({ type: 'collection', source: 'yt', kind: 'playlist', id: data.playlistId!, title: chartTitle })}
+              onPress={() =>
+                push({ type: 'collection', source: data.playlistId!.startsWith('trending:') ? 'trending' : 'yt', kind: 'playlist', id: data.playlistId!, title: chartTitle })
+              }
               style={{ paddingVertical: 8 }}
             >
               <Text style={{ color: textSecondary, fontSize: 14, fontWeight: '700' }}>{t('home.seeAll')}</Text>
@@ -356,7 +610,7 @@ function Recommended() {
   const dbv = useDbVersion();
   const tops = useMemo(() => getTopArtists(30, 6), [dbv]);
   const { startMix } = useOpenContext();
-  const { playTrack } = usePlayer();
+  const { playTrack } = usePlayerPick('playTrack');
   // Chưa có lịch sử nghe: dùng gợi ý chung của YouTube Music
   const fallback = useRemote('home', homeFeed, tops.length === 0, 3 * 60 * 60 * 1000);
 
@@ -473,23 +727,57 @@ function greetingKey() {
 }
 
 export function HomeScreen() {
-  const { theme } = useTheme();
+  const { theme, landscape } = useTheme();
   const t = useT();
   const pad = useContentInsets();
+  const { push } = useNav();
   const [editing, setEditing] = useState(false);
-  const visible = theme.home.sections.filter((s) => !theme.home.hidden.includes(s));
+  // dock Apple Music: cuộn xuống thì thu dock, cuộn lên thì mở lại
+  const homeY = useSharedValue(0);
+  const dockScroll = useAnimatedScrollHandler((e) => {
+    homeY.value = e.contentOffset.y;
+  });
+  useDockCollapse(homeY);
+  const offline = useOffline();
+  useRenderProbe('Home', { theme, landscape, t, pad, push, offline });
+  // Xoay máy (dọc ⇄ ngang): bố cục Home đổi hẳn (một cột ⇄ hai cột) nên dựng lại từ đầu → trước đây các khối "nhảy" sang
+  // chỗ mới. Giờ ngay sau khi xoay, từng khối nảy vào chỗ của mình, lần lượt cách nhau 45ms (~0,5 giây cả màn):
+  // màn dọc trượt từ dưới lên, màn ngang cột trái trượt từ trái, cột phải từ phải. Mở app / đổi tab thì không chạy
+  const prevLand = useRef(landscape);
+  const rotatedAt = useRef(0);
+  if (prevLand.current !== landscape) {
+    prevLand.current = landscape;
+    rotatedAt.current = Date.now();
+  }
+  const reducedMotion = useReducedMotion();
+  const settling = !reducedMotion && Date.now() - rotatedAt.current < 900;
+  // CHỈ trượt, không mờ dần: Liquid Glass của iOS không vẽ nếu được dựng lúc khung cha còn mờ (độ hiện ~0) và không tự vẽ lại
+  // → bản trước dùng FadeIn… làm kính các ô ở Home mất hẳn sau khi xoay (ảnh 20/11 12:30)
+  const enter = (i: number, from: 'up' | 'left' | 'right') => {
+    if (!settling) return undefined;
+    const dx = from === 'left' ? -60 : from === 'right' ? 60 : 0;
+    const dy = from === 'up' ? 40 : 0;
+    const delay = i * 45;
+    return () => {
+      'worklet';
+      const cfg = { damping: 15, stiffness: 170, mass: 0.9 };
+      return {
+        initialValues: { transform: [{ translateX: dx }, { translateY: dy }] },
+        animations: { transform: [{ translateX: withDelay(delay, withSpring(0, cfg)) }, { translateY: withDelay(delay, withSpring(0, cfg)) }] },
+      };
+    };
+  };
+  // Offline: chỉ giữ các mục đọc được từ máy (playlist của mình, nghe gần đây), thêm "Nhạc đã tải" lên đầu
+  const visible = theme.home.sections.filter((s) => !theme.home.hidden.includes(s) && (!offline || s === 'myPlaylists' || s === 'recent'));
 
   const render = (s: HomeSection) => {
     switch (s) {
       case 'myPlaylists':
         return <MyPlaylists />;
       case 'recent':
-        return (
-          <>
-            <SectionTitle title={t('home.section.recent')} />
-            <Recent />
-          </>
-        );
+        return <Recent list={landscape} />;
+      case 'feed':
+        return <Feed />;
       case 'trending':
         return <Trending />;
       case 'recommended':
@@ -509,10 +797,57 @@ export function HomeScreen() {
     }
   };
 
+  const header = (from: 'up' | 'left') => (
+    <>
+      <Animated.View entering={enter(0, from)} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16 }}>
+        <Text style={[styles.greeting, { color: theme.colors.text }]}>{t(greetingKey())}</Text>
+        {/* Thống kê nghe nhạc */}
+        <Pressable onPress={() => push({ type: 'stats' })} hitSlop={10} style={[styles.editBtn, { marginRight: 10 }]} accessibilityLabel={t('stats.title')}>
+          <GlassFill radius={19} solid={0.35} slab />
+          <Ionicons name="stats-chart" size={17} color={theme.colors.text} />
+        </Pressable>
+        <Pressable onPress={() => setEditing((v) => !v)} hitSlop={10} style={styles.editBtn}>
+            <GlassFill radius={19} solid={0.35} slab />
+          <Ionicons name="options-outline" size={20} color={theme.colors.text} />
+        </Pressable>
+      </Animated.View>
+      {editing && <EditHome onClose={() => setEditing(false)} />}
+    </>
+  );
+  const blocks = (list: HomeSection[], from: 'up' | 'left' | 'right', first = 1) =>
+    list.map((s, i) => (
+      <Animated.View key={s} entering={enter(i + first, from)} style={{ marginTop: i === 0 ? 0 : 30 }}>
+        {render(s)}
+      </Animated.View>
+    ));
+
+  // Màn hình ngang: trái = lời chào + Playlist của tôi + Nghe gần đây (xếp dọc), phải = các mục còn lại. Mỗi bên cuộn riêng
+  if (landscape) {
+    const LEFT: HomeSection[] = ['myPlaylists', 'recent'];
+    const leftList = visible.filter((s) => LEFT.includes(s));
+    const rightList = visible.filter((s) => !LEFT.includes(s));
+    return (
+      <SplitPane
+        noEnter
+        ratio={0.46}
+        left={
+          <>
+            {header('left')}
+            {offline && <Downloaded />}
+            {blocks(leftList, 'left')}
+            {visible.length === 0 && <Text style={{ color: theme.colors.textSecondary, fontSize: 14 }}>{t('home.allHidden')}</Text>}
+          </>
+        }
+        right={<View style={{ paddingTop: 4 }}>{blocks(rightList, 'right', 0)}</View>}
+      />
+    );
+  }
+
   return (
-    <ScrollView
-      bounces={false}
-      overScrollMode="never"
+    <Animated.ScrollView
+      onScroll={dockScroll}
+      scrollEventThrottle={16}
+      showsVerticalScrollIndicator={false}
       contentContainerStyle={{
         paddingTop: pad.top + 16,
         paddingBottom: pad.bottom + pad.endPadding,
@@ -520,27 +855,35 @@ export function HomeScreen() {
         paddingRight: pad.right + PAD,
       }}
     >
-      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16 }}>
-        <Text style={[styles.greeting, { color: theme.colors.text }]}>{t(greetingKey())}</Text>
-        <Pressable onPress={() => setEditing((v) => !v)} hitSlop={10} style={[styles.editBtn, { backgroundColor: theme.colors.surface }]}>
-          <Ionicons name="options-outline" size={20} color={theme.colors.text} />
-        </Pressable>
-      </View>
+      {header('up')}
 
-      {editing && <EditHome onClose={() => setEditing(false)} />}
-
-      {visible.map((s, i) => (
-        <View key={s} style={{ marginTop: i === 0 ? 0 : 30 }}>
-          {render(s)}
+      {offline && (
+        <View style={{ marginBottom: 30 }}>
+          <Downloaded />
         </View>
+      )}
+      {visible.map((s, i) => (
+        <Animated.View key={s} entering={enter(i + 1, 'up')} style={{ marginTop: i === 0 ? 0 : 30 }}>
+          {render(s)}
+        </Animated.View>
       ))}
       {visible.length === 0 && (
         <Text style={{ color: theme.colors.textSecondary, fontSize: 14 }}>{t('home.allHidden')}</Text>
       )}
-    </ScrollView>
+    </Animated.ScrollView>
   );
 }
 
+const CHIP_R = 16;
+// Bảng chọn nổi: hiện từ 95% + mờ → rõ (không mọc từ 0), đường cong ease-out mạnh, 160ms
+const popIn = () => {
+  'worklet';
+  const ease = Easing.bezier(0.23, 1, 0.32, 1);
+  return {
+    initialValues: { opacity: 0, transform: [{ scale: 0.95 }] },
+    animations: { opacity: withTiming(1, { duration: 160, easing: ease }), transform: [{ scale: withTiming(1, { duration: 160, easing: ease }) }] },
+  };
+};
 const styles = StyleSheet.create({
   greeting: { flex: 1, fontSize: 26, fontWeight: '800' },
   editBtn: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
@@ -548,12 +891,20 @@ const styles = StyleSheet.create({
   editRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 6 },
   sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, gap: 8 },
   sectionTitle: { fontSize: 20, fontWeight: '800', flexShrink: 1 },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  chip: { width: '48.8%', height: 56, borderRadius: 6, flexDirection: 'row', alignItems: 'center', overflow: 'hidden' },
-  chipCover: { width: 56, height: 56 },
+  // space-between + rowGap thay cho gap: 2 ô 48.8% luôn vừa một hàng ở mọi bề rộng (cột trái lúc ngang hẹp → trước đây rớt còn 1 cột)
+  grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 8 },
+  bigItem: { width: '48.4%', marginBottom: 14 },
+  bigCover: { width: '100%', aspectRatio: 1, borderRadius: 8 },
+  // Ô playlist = tấm kính nhỏ (giống dock): ảnh bìa nằm lọt bên trong, cách mép kính 6px
+  chip: { width: '48.8%', height: 62, borderRadius: CHIP_R, borderCurve: 'continuous', flexDirection: 'row', alignItems: 'center', padding: 6 },
+  chipCover: { width: 50, height: 50, borderRadius: CHIP_R - 6, borderCurve: 'continuous', overflow: 'hidden' },
   chipTitle: { flex: 1, marginHorizontal: 10, fontSize: 13, fontWeight: '700' },
   cardTitle: { marginTop: 8, fontSize: 14, fontWeight: '700' },
   pill: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 14 },
+  staleDot: { position: 'absolute', top: 6, right: 6, width: 7, height: 7, borderRadius: 4 },
+  regionBox: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16, borderWidth: StyleSheet.hairlineWidth },
+  regionList: { position: 'absolute', top: '100%', left: 0, marginTop: 6, minWidth: 190, borderRadius: 14, borderCurve: 'continuous', paddingVertical: 4, transformOrigin: 'left top' },
+  regionRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, height: 42 },
   rankRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 5 },
   rankThumb: { width: 46, height: 46, borderRadius: 4 },
 });
