@@ -12,7 +12,7 @@ import { showToast } from '../components/toastBridge';
 import { isOnline, useOffline as useOfflineState } from '../data/net';
 import { engineOn, flog, fxPrefetch, fxTick, getLiveRate, setFxResolver } from './fxEngine';
 import './crossfade'; // nạp cài đặt Chuyển bài mượt
-import { bgStats } from '../data/applog';
+import { bgStats, checkFrameLoop } from '../data/applog';
 
 // ---- Link phát của từng bài, lấy sẵn trước khi cần
 // Ở chế độ nền (tắt màn hình), iPhone chỉ cho app chạy tiếp khi đang PHÁT âm thanh. Hết bài mà phải đợi vài giây lấy link
@@ -669,7 +669,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       playClock.t = s.currentTime;
       playClock.at = Date.now();
       playClock.playing = s.playing;
-      if (AppState.currentState === 'active') setProgress(s.currentTime);
+      if (AppState.currentState === 'active') {
+        setProgress(s.currentTime);
+        checkFrameLoop('trình phát (báo giờ)');
+      }
       lastStatus.current = { playing: s.playing, isBuffering: s.isBuffering, isLoaded: s.isLoaded, currentTime: s.currentTime };
       if (s.isLoaded) loadAtRef.current = 0; // bài đã nạp xong
       checkStallRef.current();

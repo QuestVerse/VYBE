@@ -188,6 +188,7 @@ export function installAppLog() {
   // ở nền, React Native vẫn gọi requestAnimationFrame liên tục bằng bộ hẹn giờ → tốn CPU vô ích
   let last = 0;
   let rafOn = false;
+  rafLoopOn = () => rafOn;
   const loop = (now: number) => {
     if (AppState.currentState !== 'active') {
       rafOn = false;
@@ -195,6 +196,7 @@ export function installAppLog() {
       return;
     }
     bgStats.raf++;
+    rafAt = Date.now();
     if (last) {
       const gap = now - last;
       if (gap > 150 && !justResumed()) log('jank', `luồng JS khựng ${Math.round(gap)}ms${ctx ? ` · ${ctx}` : ''}${gap > 400 ? crumbsWithin(gap) : ''}`);
@@ -260,3 +262,22 @@ export function setLogContext(c: string) {
   log('ui', `đang ở: ${c}`);
 }
 export const getLogContext = () => ctx;
+
+// ---- Dò "khung hình JS ngừng chạy" (Tyson 21/11: mở lại player lúc đang thu về → đĩa + nền khói đứng im ~11 giây dù nhạc
+// vẫn chạy). Log cho thấy lúc đó requestAnimationFrame / setTimeout của luồng JS KHÔNG chạy, nhưng sự kiện từ trình phát
+// (báo giờ mỗi 0,5s) vẫn tới và màn hình vẫn vẽ lại → các việc chờ hẹn giờ (bật xoay đĩa, chạy khói...) bị treo tới lần chạm sau.
+// Trình phát gọi hàm này mỗi lần báo giờ: khung hình JS im quá 1,5s trong khi app đang mở → ghi 1 dòng (mỗi lần treo ghi 1 lần)
+let rafAt = Date.now();
+let rafLoopOn: () => boolean = () => false;
+let stuckLogged = 0;
+export function checkFrameLoop(src: string) {
+  if (!rafLoopOn() || AppState.currentState !== 'active' || justResumed()) return;
+  const gap = Date.now() - rafAt;
+  if (gap < 1500) {
+    stuckLogged = 0;
+    return;
+  }
+  if (stuckLogged && rafAt <= stuckLogged) return;
+  stuckLogged = Date.now();
+  log('jank', `khung hình JS ngừng ${gap}ms (setTimeout / requestAnimationFrame không chạy) trong khi ${src} vẫn chạy${getLogContext() ? ` · ${getLogContext()}` : ''}${crumbsWithin(gap)}`);
+}

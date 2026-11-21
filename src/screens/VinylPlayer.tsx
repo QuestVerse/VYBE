@@ -317,15 +317,24 @@ export const VinylPlayer = React.memo(function VinylPlayer(p: VinylProps) {
   const rot = useSharedValue(0);
   // Bắt đầu xoay đĩa / chạy khói trễ ~0,12s sau khi mở xong: đúng khung hình cuối của hiệu ứng mở, màn player vừa thôi là
   // "ảnh chụp" và phải vẽ thật lần đầu — dồn thêm khởi động xoay + khói vào đúng lúc đó làm khung cuối dài 60–90ms (log 16:52)
+  // Hẹn 0,12s bằng Reanimated (luồng giao diện) chứ KHÔNG dùng setTimeout: log 21/11 16:53 — mở lại player lúc đang thu về,
+  // setTimeout của luồng JS không chạy suốt ~11 giây → `late` kẹt ở false → đĩa không quay, nền khói đứng im dù đang phát.
+  // Luồng giao diện vẫn chạy bình thường lúc đó, nên hẹn giờ trên đó rồi báo về JS (scheduleOnRN không cần hẹn giờ JS)
   const [late, setLate] = useState(settled);
+  const lateSV = useSharedValue(0);
   useEffect(() => {
+    cancelAnimation(lateSV);
     if (!settled) {
+      lateSV.value = 0;
       setLate(false);
       return;
     }
-    const id = setTimeout(() => setLate(true), 120);
-    return () => clearTimeout(id);
-  }, [settled]);
+    lateSV.value = 0;
+    lateSV.value = withDelay(120, withTiming(1, { duration: 0 }, (done) => {
+      if (done) scheduleOnRN(setLate, true);
+    }));
+    return () => cancelAnimation(lateSV);
+  }, [settled]); // eslint-disable-line react-hooks/exhaustive-deps
   const spinning = p.isPlaying && late && fg && dbg.spin && !reduced;
   const visible = !swipe.moving && swipe.active;
   useEffect(() => {
