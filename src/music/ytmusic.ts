@@ -156,6 +156,13 @@ export async function getAudio(videoId: string, log?: Log, muxed = false): Promi
       const yt = await getSession(log);
       why = await whyUnplayable(yt, videoId);
     } catch {}
+    // Bài đã bị xoá / để riêng tư / chặn bản quyền: thử lại vô ích (log 21/11 16:40: "LOGIN_REQUIRED · This video is private"
+    // → app thử thêm 7 client + tạo phiên mới mất mấy giây rồi vẫn báo lỗi). Báo ngay để trình phát chuyển bài.
+    // (KHÔNG tính "Sign in to confirm you're not a bot": đó là YouTube chặn tạm, tạo phiên mới có thể hết)
+    if (/private|removed|deleted|terminated|no longer available|not available|unavailable|copyright|riêng tư|bị xoá|không còn/i.test(why) && !/not a bot/i.test(why)) {
+      log?.(`YouTube trả lời: ${why}. Bài không còn phát được, không thử lại`);
+      throw Object.assign(new Error(`Bài không còn trên YouTube: ${why}`), { unavailable: true });
+    }
     log?.(`YouTube trả lời: ${why}. Tạo phiên mới và thử lại...`);
     sessionPromise = null;
     try {

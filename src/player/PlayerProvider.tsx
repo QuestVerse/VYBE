@@ -182,6 +182,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const resumeAt = useRef(0);
   const pendingSeek = useRef<{ qid: string; at: number } | null>(null);
   const goToRef = useRef<(i: number) => void>(() => {});
+  const skipStreak = useRef(0); // số bài hỏng (đã xoá / riêng tư) bị bỏ qua liên tiếp
 
   // Đổi hàng đợi: luôn cập nhật cả bản sao (ref) lẫn state
   const commitQueue = useCallback((q: QueueItem[], i = indexRef.current) => {
@@ -242,6 +243,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       const beforeUri = before ? cachedUrl(before.id) : null;
       audio().startTrack(t.qid, uri, before && beforeUri ? { key: before.qid, uri: beforeUri } : null);
       loadAtRef.current = Date.now();
+      skipStreak.current = 0;
       stallRef.current = { t: -1, at: loadAtRef.current };
       // Màn hình khoá / thanh thông báo (Android: cần cái này để nhạc chạy nền lâu dài)
       audio().showNowPlaying(nowPlayingMeta(t));
@@ -252,6 +254,21 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       }, 4000);
     } catch (e) {
       console.warn('Không phát được', t.title, e);
+      // Bài đã bị xoá / riêng tư trên YouTube: báo rõ và tự sang bài kế trong hàng đợi (tối đa bằng độ dài hàng đợi, tránh
+      // lặp mãi khi cả danh sách đều hỏng)
+      if (id === reqId.current && (e as { unavailable?: boolean })?.unavailable) {
+        const q = queueRef.current;
+        const k = q.findIndex((x) => x.qid === t.qid);
+        skipStreak.current += 1;
+        flog(`bài không còn trên YouTube (đã xoá / riêng tư): ${t.title}`, 'music');
+        if (q.length > 1 && k >= 0 && skipStreak.current < q.length) {
+          showToast('player.unavailableSkip');
+          loadingRef.current = false;
+          goToRef.current((k + 1) % q.length);
+          return;
+        }
+        showToast('player.unavailable');
+      }
       // Mất mạng: tự chuyển sang bài kế tiếp ĐÃ TẢI VỀ trong hàng đợi (nếu có), không thì báo cho người dùng biết
       if (id === reqId.current && !(await isOnline()) && id === reqId.current) {
         const q = queueRef.current;
