@@ -4,7 +4,7 @@ import { PRESETS } from './presets';
 export const defaultTheme: Theme = {
   version: 1,
   name: 'Default Dark',
-  language: 'vi',
+  language: 'en',
   preset: 'dark',
   followSystem: true, // người dùng mới: theo sáng/tối của điện thoại
   background: { type: 'preset', color: PRESETS.dark.bg, uri: '', dim: 0.25 },

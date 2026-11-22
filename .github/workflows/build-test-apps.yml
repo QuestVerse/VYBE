@@ -11,6 +11,9 @@
 #  - build APK + IPA với kênh cập nhật "production" (người dùng KHÔNG nhận các bản [update] thử nghiệm)
 #  - tạo Release chính thức "ZYX v<version>" (không phải pre-release, đánh dấu Latest), tag v<version>
 #  - đẩy luôn bản JS đó lên kênh production (app ổn định đã cài sẽ tự cập nhật)
+#
+# HOTFIX for stable users: a commit containing [hotfix] (on main) only pushes the new JS to the "production" channel
+#  (no new build, no new Release) — stable installs pick it up after closing and reopening the app.
 #  APK (cả bản thử lẫn bản ổn định) ký bằng khoá riêng của ZYX nếu có secret ANDROID_KEYSTORE_BASE64 (scripts/ci/android-signing.js)
 name: Build test apps
 
@@ -151,7 +154,7 @@ jobs:
   # Cập nhật qua mạng (EAS Update): app đã cài tự tải bản mới, không cần cài lại.
   # Chỉ dùng được cho thay đổi JS / ảnh. Thêm thư viện native, đổi icon, tên app, quyền... thì phải [build] lại
   update:
-    if: github.event_name == 'push' && (contains(github.event.head_commit.message, '[update]') || contains(github.event.head_commit.message, '[release]'))
+    if: github.event_name == 'push' && (contains(github.event.head_commit.message, '[update]') || contains(github.event.head_commit.message, '[release]') || contains(github.event.head_commit.message, '[hotfix]'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -162,12 +165,12 @@ jobs:
           cache: npm
       - run: npm ci
       # Đẩy riêng iOS và Android: để "all" thì nó đóng gói cả bản web (app không dùng web, và expo-sqlite trên web lỗi)
-      - name: Đẩy bản cập nhật (preview cho [update], production cho [release])
+      - name: Push OTA update (preview for [update], production for [release] / [hotfix])
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           MSG: ${{ github.event.head_commit.message }}
-          CH: ${{ contains(github.event.head_commit.message, '[release]') && 'production' || 'preview' }}
+          CH: ${{ (contains(github.event.head_commit.message, '[release]') || contains(github.event.head_commit.message, '[hotfix]')) && 'production' || 'preview' }}
           CI: 1
         run: |
           # Sau mỗi lần đẩy: gửi source map của bản cập nhật lên Sentry (lỗi thì bỏ qua)
