@@ -164,6 +164,34 @@ jobs:
           - Android: tải \`Zyx.apk\` rồi cài thẳng lên máy.
           - iPhone: tải \`Zyx-unsigned.ipa\`, ký và cài bằng ESign / Sideloadly."
 
+  # ZYX Beta: one rolling pre-release "ZYX Beta" (tag beta-latest), replaced by every beta [build],
+  # so the Releases page only ever shows a single beta entry next to the stable releases.
+  beta-release:
+    needs: [android, ios]
+    if: github.ref_name == 'beta'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: out
+          merge-multiple: true
+      - name: Replace the "ZYX Beta" pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mv out/Zyx.apk out/ZYX-Beta.apk
+          mv out/Zyx-unsigned.ipa out/ZYX-Beta-unsigned.ipa
+          gh release delete beta-latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh release create beta-latest out/ZYX-Beta.apk out/ZYX-Beta-unsigned.ipa \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "ZYX Beta (build ${{ github.run_number }})" \
+            --notes "Beta build ${{ github.run_number }} from the \`beta\` branch (commit $GITHUB_SHA).
+          ZYX Beta installs next to the stable app — it does not replace it.
+          - Android: download \`ZYX-Beta.apk\` and install.
+          - iPhone: download \`ZYX-Beta-unsigned.ipa\` and sign it with ESign / Sideloadly / AltStore."
+
   # Cập nhật qua mạng (EAS Update): app đã cài tự tải bản mới, không cần cài lại.
   # Chỉ dùng được cho thay đổi JS / ảnh. Thêm thư viện native, đổi icon, tên app, quyền... thì phải [build] lại
   update:
