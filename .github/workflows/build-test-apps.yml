@@ -101,7 +101,9 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild -version
-          xcodebuild -workspace ios/Zyx.xcworkspace -scheme Zyx -configuration Release \
+          # project name follows the app name ("Zyx", or "ZYXBeta" for the beta variant)
+          WS=$(ls -d ios/*.xcworkspace | head -n 1); SCHEME=$(basename "$WS" .xcworkspace); echo "workspace $WS · scheme $SCHEME"
+          xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -archivePath build/Zyx.xcarchive archive \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" > xcodebuild.log 2>&1 \
             || { echo "=== CÁC DÒNG LỖI ==="; grep -nE "error:|\*\* ARCHIVE FAILED|fatal" xcodebuild.log | head -n 60; echo "=== 80 DÒNG CUỐI ==="; tail -n 80 xcodebuild.log; exit 1; }
@@ -115,7 +117,7 @@ jobs:
       - name: Đóng gói IPA
         run: |
           mkdir -p Payload
-          cp -R build/Zyx.xcarchive/Products/Applications/Zyx.app Payload/
+          cp -R build/Zyx.xcarchive/Products/Applications/*.app Payload/
           zip -qry Zyx-unsigned.ipa Payload
       - uses: actions/upload-artifact@v5
         with:
