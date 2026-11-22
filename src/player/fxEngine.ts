@@ -700,9 +700,21 @@ function streamSource(c: Ctx, id: string, uri: string): FxSource | null {
         node.onended = '0';
         node.disconnect(undefined);
       } catch {}
+      bury(node, media, g);
     },
   };
   return src;
+}
+
+// Sentry REACT-NATIVE-A: when Hermes garbage-collects a closed source, react-native-audio-api tears the
+// node down on the GC thread while the audio graph is still running and crashes (EXC_BAD_ACCESS in
+// AudioFileSourceNode::releaseMediaElementSource). Keep closed sources referenced for a while so they are
+// not collected right after a track change; only the oldest ones are released.
+const graveyard: unknown[][] = [];
+const GRAVEYARD_MAX = 30;
+function bury(...objs: unknown[]) {
+  graveyard.push(objs);
+  if (graveyard.length > GRAVEYARD_MAX) graveyard.shift();
 }
 
 // Dự phòng: giải mã cả bài vào bộ nhớ (cách cũ)
