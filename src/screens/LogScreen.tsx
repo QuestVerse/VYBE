@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Alert, FlatList, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { resetVinylFlags, setVinylFlag, useVinylFlags, VINYL_FLAGS } from '../debug/vinylFlags';
 import { isStableBuild } from '../data/channel';
+import { GlassLab } from '../debug/GlassLab';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeProvider';
 import { useContentInsets } from '../components/FloatingDock';
@@ -39,6 +40,7 @@ export function LogScreen() {
   const vflags = useVinylFlags();
   const offCount = VINYL_FLAGS.filter(([k]) => !vflags[k]).length;
   const [debugOpen, setDebugOpen] = useState(offCount > 0);
+  const [labOpen, setLabOpen] = useState(false);
   const n = all.length;
   const rows = useMemo(() => {
     const src = filter === 'all' ? all : all.filter((l) => l.tag === filter);
@@ -110,6 +112,13 @@ export function LogScreen() {
             </Pressable>
           </View>
         )}
+        {/* Glass Lab (beta): compare every glass material, dock vs in-page */}
+        <Pressable onPress={() => setLabOpen((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 }}>
+          <Ionicons name="color-filter-outline" size={18} color={text} />
+          <Text style={{ flex: 1, color: text, fontWeight: '800', fontSize: 15 }}>Glass Lab</Text>
+          <Ionicons name={labOpen ? 'chevron-up' : 'chevron-down'} size={18} color={textSecondary} />
+        </Pressable>
+        {labOpen && <GlassLab text={text} sub={textSecondary} />}
       </View>
       )}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 14 }}>

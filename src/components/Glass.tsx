@@ -80,14 +80,32 @@ export const SQUIRCLE = { borderCurve: 'continuous' as const };
 // dark: luôn là kính tối (bảng mở từ trong player, chữ trắng) bất kể theme
 // noRim: tắt ánh sáng ở viền (vệt sáng mép trên, bóng tối mép dưới, viền bắt sáng) — tuỳ chọn của dock.
 // Liquid Glass thật của iOS tự vẽ ánh sáng viền và không tắt được, nên khi tắt thì dùng kính tự vẽ (vẫn mờ, vẫn trong)
-export function GlassFill({ radius = 0, solid = 0, slab = false, dark: forceDark = false, noRim = false }: { radius?: number; solid?: number; slab?: boolean; dark?: boolean; noRim?: boolean }) {
+// material / liquid: overrides used by the Glass Lab debug screen (compare each material, real Liquid Glass vs self-drawn)
+export function GlassFill({
+  radius = 0,
+  solid = 0,
+  slab = false,
+  dark: forceDark = false,
+  noRim = false,
+  material: forceMaterial,
+  liquid,
+}: {
+  radius?: number;
+  solid?: number;
+  slab?: boolean;
+  dark?: boolean;
+  noRim?: boolean;
+  material?: GlassMaterial;
+  liquid?: boolean;
+}) {
   const { theme } = useTheme();
-  const inside = useContext(GlassInsideCtx);
+  const ctxInside = useContext(GlassInsideCtx);
+  const inside = liquid === undefined ? ctxInside : !liquid;
   const glassRgb = forceDark ? '22,22,26' : theme.colors.glassRgb;
   const glassTint = forceDark ? 'dark' : theme.colors.glassTint;
   const border = forceDark ? 'rgba(255,255,255,0.14)' : theme.colors.border;
   const g = useGlass();
-  const material: GlassMaterial = theme.glass.material ?? 'clear';
+  const material: GlassMaterial = forceMaterial ?? theme.glass.material ?? 'clear';
   const dark = glassTint === 'dark';
   const real = Platform.OS !== 'web';
   // ---- Neon: gần như trong suốt (nhoè rất nhẹ + lớp tối mỏng), chỉ có viền phát sáng màu đèn (chọn trong Theme Studio).
