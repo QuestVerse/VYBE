@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { AppState, Platform } from 'react-native';
-import { cacheGet, cacheSet } from './db';
+import { cacheDel, cacheGet, cacheSet } from './db';
 
 // Nhật ký của app (Cài đặt → Nhật ký): ghi mọi thứ để dò lỗi khi đang dùng
 //  - music: trình phát chính (trạng thái, đứng im, hết bài, tải lại link)
@@ -9,7 +9,7 @@ import { cacheGet, cacheSet } from './db';
 //  - jank: luồng JS hoặc luồng giao diện bị khựng
 //  - swipe: vuốt quay lại từ cạnh trái
 //  - ui: mở / đóng trang, đổi tab, app vào nền / quay lại
-// Giữ 1000 dòng gần nhất, lưu xuống máy vài giây một lần (và ngay khi có lỗi / app vào nền) nên còn sau khi tắt app.
+// Kept per day for 14 days (see Day store below), saved every few seconds and right away on errors / jank / going to the background.
 //  - perf: tóm tắt hiệu năng định kỳ (fps, khung rớt, JS trễ, bộ nhớ) kèm màn đang xem + theme / hiệu ứng / kính
 export type LogTag = 'music' | 'fx' | 'error' | 'jank' | 'swipe' | 'ui' | 'motion' | 'perf';
 export interface LogLine { t: number; tag: LogTag; msg: string; bg?: boolean }
@@ -18,14 +18,105 @@ const KEY = 'applog:v1';
 const ALIVE = 'applog:alive';
 const MAX = 1000;
 let lines: LogLine[] | null = null;
-let dirty = false;
 let ver = 0;
 const subs = new Set<() => void>();
 
+// ---------- Day store ----------
+// The log is kept per day for KEEP_DAYS days (Settings › Log shows one entry per day). Each day is stored in chunks of
+// CHUNK lines and only the newest chunk is rewritten on save, so saving every few seconds stays cheap.
+// `lines` is the in-memory list of the most recent MAX lines (across days) used by the black box and Sentry.
+const DAYS_KEY = 'applog:days:v1';
+const CHUNK = 500;
+export const KEEP_DAYS = 14;
+export interface DayMeta { day: string; chunks: number; lines: number; errors: number; jank: number; crashes: number; crashAt?: number[] }
+let days: Record<string, DayMeta> | null = null;
+let pending: LogLine[] = [];
+let tail: { day: string; idx: number; arr: LogLine[] } | null = null; // newest chunk, kept in memory
+
+const p2 = (n: number) => `${n}`.padStart(2, '0');
+export function dayOf(t: number) {
+  const d = new Date(t);
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+}
+const chunkKey = (day: string, i: number) => `applog:d:${day}:${i}`;
+
+function loadDays(): Record<string, DayMeta> {
+  if (days) return days;
+  try {
+    days = cacheGet<Record<string, DayMeta>>(DAYS_KEY)?.value ?? {};
+  } catch {
+    days = {};
+  }
+  // one-time move of the old single list (before logs were kept per day)
+  try {
+    const old = cacheGet<LogLine[]>(KEY)?.value;
+    if (old?.length) {
+      pending = old.concat(pending);
+      persistPending();
+    }
+    if (old) cacheDel(KEY);
+  } catch {}
+  pruneDays();
+  return days;
+}
+
+function pruneDays() {
+  if (!days) return;
+  const keep = new Set(Array.from({ length: KEEP_DAYS }, (_, i) => dayOf(Date.now() - i * 86400000)));
+  let changedDays = false;
+  for (const d of Object.keys(days)) {
+    if (keep.has(d)) continue;
+    for (let i = 0; i < days[d].chunks; i++) cacheDel(chunkKey(d, i));
+    delete days[d];
+    changedDays = true;
+  }
+  if (changedDays) cacheSet(DAYS_KEY, days);
+}
+
+function persistPending() {
+  if (!pending.length || !days) return;
+  const batch = pending;
+  pending = [];
+  for (const l of batch) {
+    const day = dayOf(l.t);
+    const m = (days[day] ??= { day, chunks: 0, lines: 0, errors: 0, jank: 0, crashes: 0 });
+    if (!tail || tail.day !== day) {
+      if (tail) cacheSet(chunkKey(tail.day, tail.idx), tail.arr); // the day changed (midnight): save the old day's chunk
+      const idx = Math.max(m.chunks - 1, 0);
+      tail = { day, idx, arr: m.chunks ? cacheGet<LogLine[]>(chunkKey(day, idx))?.value ?? [] : [] };
+    }
+    if (tail.arr.length >= CHUNK) {
+      cacheSet(chunkKey(day, tail.idx), tail.arr);
+      tail = { day, idx: tail.idx + 1, arr: [] };
+    }
+    tail.arr.push(l);
+    m.chunks = Math.max(m.chunks, tail.idx + 1);
+    m.lines++;
+    if (l.tag === 'error') m.errors++;
+    if (l.tag === 'jank') m.jank++;
+  }
+  if (tail) cacheSet(chunkKey(tail.day, tail.idx), tail.arr);
+  cacheSet(DAYS_KEY, days);
+}
+
 function load(): LogLine[] {
   if (!lines) {
+    lines = [];
     try {
-      lines = cacheGet<LogLine[]>(KEY)?.value ?? [];
+      const ds = loadDays();
+      // the newest MAX lines, from the newest days backwards
+      const order = Object.keys(ds).sort().reverse();
+      const out: LogLine[][] = [];
+      let n = 0;
+      for (const d of order) {
+        for (let i = ds[d].chunks - 1; i >= 0 && n < MAX; i--) {
+          const c = cacheGet<LogLine[]>(chunkKey(d, i))?.value ?? [];
+          out.unshift(c);
+          n += c.length;
+        }
+        if (n >= MAX) break;
+      }
+      lines = out.flat().slice(-MAX);
     } catch {
       lines = [];
     }
@@ -34,11 +125,41 @@ function load(): LogLine[] {
 }
 
 export function flushLog() {
-  if (!dirty || !lines) return;
-  dirty = false;
+  if (!pending.length) return;
   try {
-    cacheSet(KEY, lines); // ghi thẳng, không báo màn hình vẽ lại như kvSet
+    loadDays();
+    persistPending();
   } catch {}
+}
+
+// Days that have a log, newest first (for Settings › Log)
+export function listLogDays(): DayMeta[] {
+  const ds = loadDays();
+  flushLog();
+  return Object.values(ds).sort((a, b) => (a.day < b.day ? 1 : -1));
+}
+
+// Every line of one day, oldest first
+export function getDayLines(day: string): LogLine[] {
+  const ds = loadDays();
+  flushLog();
+  const m = ds[day];
+  if (!m) return [];
+  const out: LogLine[] = [];
+  for (let i = 0; i < m.chunks; i++) out.push(...(cacheGet<LogLine[]>(chunkKey(day, i))?.value ?? []));
+  return out;
+}
+
+// The black box found that the run which logged its last line at `t` crashed / was killed
+export function markCrash(t: number) {
+  const ds = loadDays();
+  const day = dayOf(t);
+  const m = (ds[day] ??= { day, chunks: 0, lines: 0, errors: 0, jank: 0, crashes: 0 });
+  m.crashes++;
+  m.crashAt = [...(m.crashAt ?? []), t].slice(-20);
+  cacheSet(DAYS_KEY, ds);
+  ver++;
+  subs.forEach((f) => f());
 }
 
 let notifyQueued = false;
@@ -74,21 +195,31 @@ export function log(tag: LogTag, msg: string) {
   crumb(`[${tag}] ${msg.length > 48 ? `${msg.slice(0, 48)}…` : msg}`);
   bgStats.logs++;
   const arr = load();
-  arr.push({ t: Date.now(), tag, msg, bg: AppState.currentState !== 'active' || undefined });
+  const line: LogLine = { t: Date.now(), tag, msg, bg: AppState.currentState !== 'active' || undefined };
+  arr.push(line);
   if (arr.length > MAX) arr.splice(0, arr.length - MAX);
-  dirty = true;
+  pending.push(line);
   // Lỗi, hoặc app đang ở nền: lưu ngay. App bị iOS tắt ở nền thì không kịp lần lưu 5 giây sau → mất đúng mấy dòng cuối
   // (vụ 14/11 20:46: app chết ~1 giây sau khi xuống nền, nhật ký không còn dòng nào kể chuyện gì xảy ra)
-  if (tag === 'error' || AppState.currentState !== 'active') flushLog();
+  if (tag === 'error' || tag === 'jank' || AppState.currentState !== 'active') flushLog();
   notify();
+  // black box: warning signs send a log snapshot right away (see blackbox.ts)
+  if (tag === 'jank') {
+    const ms = Number(/(\d+)ms/.exec(msg)?.[1] ?? 0);
+    if (ms >= 2000) blackBox()?.blackBoxSnapshot('freeze', msg);
+  }
   // Chép ra nhật ký hệ thống (Android: logcat) để máy kiểm tra tự động trên GitHub đọc được
   if (tag !== 'music' && tag !== 'fx') console.log(`[zyx][${tag}] ${msg}`);
 }
 
 export function clearLog() {
+  const ds = loadDays();
+  for (const d of Object.keys(ds)) for (let i = 0; i < ds[d].chunks; i++) cacheDel(chunkKey(d, i));
+  days = {};
+  tail = null;
+  pending = [];
+  cacheSet(DAYS_KEY, days);
   lines = [];
-  dirty = true;
-  flushLog();
   notify();
 }
 
@@ -116,6 +247,18 @@ export function logToText(arr: LogLine[]) {
   return arr.map((l) => `${fmtTime(l.t)} [${l.tag}]${l.bg ? ' (nền)' : ''} ${l.msg}`).join('\n');
 }
 
+// lazy require: blackbox imports this file
+function blackBox(): typeof import('./blackbox') | null {
+  try {
+    return require('./blackbox') as typeof import('./blackbox');
+  } catch {
+    return null;
+  }
+}
+
+// The previous run's log lines (everything after the previous "— mở app" marker), read before this run logs anything
+export let previousSession: LogLine[] = [];
+
 // ---------- Tự bắt lỗi, cảnh báo, khựng ----------
 let installed = false;
 export function installAppLog() {
@@ -135,15 +278,21 @@ export function installAppLog() {
   try {
     lastAlive = cacheGet<number>(ALIVE)?.value ?? null;
   } catch {}
+  try {
+    const prev = load();
+    let start = 0;
+    for (let i = prev.length - 1; i >= 0; i--) if (prev[i].msg.startsWith('— mở app')) { start = i; break; }
+    previousSession = prev.slice(start);
+  } catch {}
   log('ui', `— mở app ${ver0} (${Platform.OS} ${Platform.Version}) —${lastAlive ? ` lần trước còn chạy tới ${fmtTime(lastAlive)}` : ''}`);
 
   // Lưu định kỳ + đánh dấu "còn sống" (chạy cả khi app ở nền mà đang phát nhạc)
   setInterval(() => {
-    flushLog();
+    flushLog(); // every 3 s: the black box keeps at most ~3 s of ordinary lines unsaved when the app dies
     try {
       cacheSet(ALIVE, Date.now());
     } catch {}
-  }, 5000);
+  }, 3000);
 
   // App vào nền / quay lại
   AppState.addEventListener('change', (st) => {
@@ -153,6 +302,7 @@ export function installAppLog() {
   // iOS báo sắp hết bộ nhớ: nếu ngay sau dòng này app bị tắt / mở lại từ đầu → bị tắt vì tốn RAM, không phải lỗi code
   AppState.addEventListener('memoryWarning', () => {
     log('error', 'cảnh báo: iOS báo app sắp hết bộ nhớ (RAM)');
+    blackBox()?.blackBoxSnapshot('memory', 'iOS low-memory warning');
   });
 
   // Lỗi JS chưa bắt (kể cả lỗi làm app tắt): ghi + lưu ngay rồi để RN xử lý như cũ
@@ -163,6 +313,7 @@ export function installAppLog() {
       try {
         log('error', `${fatal ? 'LỖI NẶNG (app tắt)' : 'lỗi'}: ${e?.message ?? e}\n${String(e?.stack ?? '').split('\n').slice(0, 6).join('\n')}`);
         flushLog();
+        if (fatal) blackBox()?.blackBoxSnapshot('fatal', String(e?.message ?? e));
       } catch {}
       prev?.(e, fatal);
     });

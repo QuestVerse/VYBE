@@ -245,6 +245,18 @@ export function getLikedTracks(): Track[] {
   );
 }
 
+// Liked Songs keeps its order in liked_at (newest first). After the user drags songs around, rewrite liked_at so the
+// new order holds; it stays below the current newest time, so a song liked later still lands at the top.
+export function reorderLiked(trackIds: string[]) {
+  safe(undefined, (d) =>
+    d.withTransactionSync(() => {
+      const top = d.getFirstSync<{ m: number | null }>('SELECT MAX(liked_at) AS m FROM liked')?.m ?? Date.now();
+      trackIds.forEach((id, i) => d.runSync('UPDATE liked SET liked_at = ? WHERE track_id = ?', [top - i, id]));
+    })
+  );
+  changed();
+}
+
 // ---------------- Playlist trong máy ----------------
 const newId = () => `pl_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
@@ -348,6 +360,21 @@ export function setDownload(t: Track, file: string | null) {
   changed();
 }
 
+// Drag-to-reorder in a user playlist: `order` is the old positions in their new order. Positions are rewritten
+// 0..n-1; rows are first moved out of the way (+1e6) because (playlist_id, position) is the primary key.
+export function reorderPlaylist(id: string, order: number[]) {
+  safe(undefined, (d) =>
+    d.withTransactionSync(() => {
+      d.runSync('UPDATE playlist_tracks SET position = position + 1000000 WHERE playlist_id = ?', [id]);
+      order.forEach((oldPos, i) => {
+        d.runSync('UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND position = ?', [i, id, oldPos + 1000000]);
+      });
+      d.runSync('UPDATE playlists SET updated_at = ? WHERE id = ?', [Date.now(), id]);
+    })
+  );
+  changed();
+}
+
 export function removeFromPlaylist(id: string, position: number) {
   safe(undefined, (d) =>
     d.withTransactionSync(() => {
@@ -380,6 +407,10 @@ export function cacheGet<T>(key: string): { value: T; at: number } | null {
 
 export function cacheSet(key: string, value: unknown) {
   safe(undefined, (d) => d.runSync('INSERT OR REPLACE INTO kv (key, value, at) VALUES (?, ?, ?)', [key, JSON.stringify(value), Date.now()]));
+}
+
+export function cacheDel(key: string) {
+  safe(undefined, (d) => d.runSync('DELETE FROM kv WHERE key = ?', [key]));
 }
 
 // ---------------- Lưu trữ khoá-giá trị (cài đặt nhỏ, profile...) ----------------

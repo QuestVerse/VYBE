@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useOffline } from '../data/net';
-import { batchOf, cancelBatch, downloadAll, isDownloaded, removeAll, setOnlyDownloaded, useDownloads, useOnlyDownloaded } from '../data/downloads';
+import { batchOf, cancelBatch, downloadAll, downloadProgress, downloadState, isDownloaded, removeAll, setOnlyDownloaded, useDownloadVersion, useOnlyDownloaded, type DownloadState } from '../data/downloads';
+import Svg, { Circle } from 'react-native-svg';
 import { Stagger } from '../components/Stagger';
 import { loadTrendingSummed, parseTrendingId } from '../data/trending';
 import { FadeBottom } from '../components/FadeBottom';
@@ -21,10 +22,12 @@ import type { Track } from '../data/mock';
 import type { Collection } from '../music/ytmusic';
 import { musicSupported, toTrack, ytmusic } from '../music/lazy';
 import {
-  deletePlaylist, getLikedTracks, getPlaylist, getPlaylistTracks, isSaved, PlayContext, removeFromPlaylist,
+  deletePlaylist, getLikedTracks, getPlaylist, getPlaylistTracks, isSaved, PlayContext, removeFromPlaylist, reorderLiked, reorderPlaylist,
   renamePlaylist, setPlaylistCover, setPlaylistDescription, setPlaylistPublic, setSaved, useDbVersion,
 } from '../data/db';
 import { useScreenSize } from '../components/ScreenSize';
+import { Reorderable } from '../components/Reorderable';
+import { ReorderableScrollView } from '../components/ReorderableScrollView';
 import Animated from 'react-native-reanimated';
 import { useDockCollapse } from '../components/dockCollapse';
 import { StretchyBg, useStretchScroll } from '../components/Stretchy';
@@ -57,7 +60,7 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
   const goBack = useAnimatedBack() ?? pop; // trượt ra rồi mới đóng
   // Trượt vào xong mới dựng hết danh sách (trước đó chỉ vài bài đầu) để hiệu ứng mở trang không bị khựng
   const entered = useEntered();
-  const { track, playTrack, shuffle, toggleShuffle, liked, addToQueue } = usePlayerPick('track', 'playTrack', 'shuffle', 'toggleShuffle', 'liked', 'addToQueue');
+  const { track, playTrack, shuffle, toggleShuffle, liked, addToQueue, toggleLike } = usePlayerPick('track', 'playTrack', 'shuffle', 'toggleShuffle', 'liked', 'addToQueue', 'toggleLike');
   const songMenu = useSongMenu();
   const sheet = useActionSheet();
   const dbv = useDbVersion();
@@ -71,7 +74,7 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
   // Offline: tự chỉ hiện bài đã tải (không đổi lựa chọn đã lưu của nút "Đã tải")
   const offlineNow = useOffline();
   const onlyDl = useOnlyDownloaded() || offlineNow;
-  useDownloads();
+  const dlVer = useDownloadVersion();
   const rows = onlyDl ? allRows.filter((r) => isDownloaded(r.id)) : allRows;
   // Nút tải cả danh sách (bên phải nút Phát): xanh lá khi mọi bài đã tải; đang tải thì hiện số bài đã xong / tổng
   const dlKey = `${page.source}:${page.id}`;
@@ -447,17 +450,18 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
 
   // Mỗi dòng là component riêng (memo): trạng thái nhạc đổi (bấm trộn bài, phát / dừng...) thì chỉ dòng nào thật sự đổi
   // (bài đang phát, dấu tích thích) mới vẽ lại, không vẽ lại cả danh sách như trước
-  const handlers = useRef({ play: (_r: Row) => {}, menu: (_r: Row) => {} });
+  const handlers = useRef({ play: (_r: Row) => {}, menu: (_r: Row) => {}, like: (_r: Row) => {} });
+  handlers.current.like = (r: Row) => toggleLike(r.id, r);
   handlers.current.play = (r: Row) => playTrack(r, rows, ctx);
   handlers.current.menu = menuFor;
-  const rowExtra = `${track.id}:${liked.size}:${text}`;
+  const rowExtra = `${track.id}:${liked.size}:${text}:${dlVer}`;
   const renderRow = useCallback(
     ({ item, index }: { item: Row; index: number }) => (
       <Stagger i={index}>
-        <SongRow item={item} playing={item.id === track.id} isLiked={liked.has(item.id)} showThumb={!isAlbum} handlers={handlers} colors={theme.colors} />
+        <SongRow item={item} playing={item.id === track.id} isLiked={liked.has(item.id)} dl={downloadState(item.id)} dlProgress={downloadProgress(item.id)} showThumb={!isAlbum} handlers={handlers} colors={theme.colors} />
       </Stagger>
     ),
-    [track.id, liked, isAlbum, theme.colors]
+    [track.id, liked, isAlbum, theme.colors, dlVer] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   // ================= Màn hình ngang =================
@@ -512,6 +516,44 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
     );
   }
 
+  // User playlist: hold a song and drag it up/down to reorder. Reorderable lays out every row (not virtualised),
+  // so very long playlists keep the plain list.
+  if ((local || page.source === 'liked') && rows.length > 0 && rows.length <= REORDER_MAX) {
+    // ids stay the same across a reorder (track id + nth copy of it), so rows don't re-mount when the order is saved
+    const seen = new Map<string, number>();
+    const items = rows.map((r, i) => {
+      const n = seen.get(r.id) ?? 0;
+      seen.set(r.id, n + 1);
+      return { id: `${r.id}#${n}`, row: r, pos: r.position ?? i };
+    });
+    const posOf = new Map(items.map((it) => [it.id, it.pos]));
+    const trackOf = new Map(items.map((it) => [it.id, it.row.id]));
+    return (
+      <View style={StyleSheet.absoluteFill}>
+        <ReorderableScrollView bounces scrollYOut={scrollY} contentContainerStyle={{ paddingHorizontal: pad.left + 16, paddingBottom: pad.bottom + pad.endPadding }}>
+          {Header}
+          <Reorderable
+            key={`reorder:${Math.round(width)}`}
+            data={items}
+            enabled
+            columns={1}
+            cellWidth={width - 2 * (pad.left + 16)}
+            gapX={0}
+            gapY={0}
+            estimatedHeight={73}
+            renderItem={(it) => (
+              <View style={{ borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: border }}>
+                <SongRow item={it.row} playing={it.row.id === track.id} isLiked={liked.has(it.row.id)} dl={downloadState(it.row.id)} dlProgress={downloadProgress(it.row.id)} showThumb handlers={handlers} colors={theme.colors} longPressMenu={false} />
+              </View>
+            )}
+            onReorder={(ids) => (local ? reorderPlaylist(page.id, ids.map((id) => posOf.get(id)!)) : reorderLiked(ids.map((id) => trackOf.get(id)!)))}
+          />
+          {Footer}
+        </ReorderableScrollView>
+      </View>
+    );
+  }
+
   return (
     <View style={StyleSheet.absoluteFill}>
       <Animated.FlatList
@@ -531,12 +573,37 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
   );
 }
 
-type Handlers = React.MutableRefObject<{ play: (r: Row) => void; menu: (r: Row) => void }>;
-const SongRow = React.memo(function SongRow({
-  item, playing, isLiked, showThumb, handlers, colors,
-}: { item: Row; playing: boolean; isLiked: boolean; showThumb: boolean; handlers: Handlers; colors: { text: string; textSecondary: string; accent: string; surface: string } }) {
+const REORDER_MAX = 300;
+
+type Handlers = React.MutableRefObject<{ play: (r: Row) => void; menu: (r: Row) => void; like: (r: Row) => void }>;
+
+// Before the artist line: green arrow = downloaded, a small ring filling up = downloading
+function DownloadMark({ state, progress, track }: { state: DownloadState; progress: number; track: string }) {
+  if (state === 'done')
+    return (
+      <View style={[styles.dlDot, { backgroundColor: DL_GREEN }]}>
+        <Ionicons name="arrow-down" size={10} color="#000" />
+      </View>
+    );
+  if (state !== 'downloading') return null;
+  const r = 6;
+  const c = 2 * Math.PI * r;
   return (
-    <Pressable onPress={() => handlers.current.play(item)} onLongPress={() => handlers.current.menu(item)} style={styles.row}>
+    <Svg width={14} height={14} viewBox="0 0 14 14" style={{ transform: [{ rotate: '-90deg' }] }}>
+      <Circle cx={7} cy={7} r={r} stroke={track} strokeWidth={2} fill="none" />
+      <Circle cx={7} cy={7} r={r} stroke={DL_GREEN} strokeWidth={2} fill="none" strokeLinecap="round" strokeDasharray={`${c}`} strokeDashoffset={c * (1 - Math.max(0.04, Math.min(1, progress)))} />
+    </Svg>
+  );
+}
+const SongRow = React.memo(function SongRow({
+  item, playing, isLiked, showHeart = true, dl = 'none', dlProgress = 0, showThumb, handlers, colors, longPressMenu = true,
+}: {
+  item: Row; playing: boolean; isLiked: boolean; showHeart?: boolean; dl?: DownloadState; dlProgress?: number; showThumb: boolean; handlers: Handlers;
+  colors: { text: string; textSecondary: string; accent: string; surface: string; border?: string }; longPressMenu?: boolean;
+}) {
+  // In a user playlist, holding a row lifts it for drag-to-reorder, so the menu is only on the "…" button there
+  return (
+    <Pressable onPress={() => handlers.current.play(item)} onLongPress={longPressMenu ? () => handlers.current.menu(item) : undefined} style={styles.row}>
       {/* Album: các bài cùng ảnh bìa nên bỏ ảnh đi (giống Spotify); playlist thì giữ ảnh từng bài */}
       {showThumb &&
         (item.thumb ? (
@@ -546,9 +613,16 @@ const SongRow = React.memo(function SongRow({
         ))}
       <View style={{ flex: 1 }}>
         <Text numberOfLines={1} style={{ color: playing ? colors.accent : colors.text, fontSize: 17, fontWeight: '600' }}>{item.title}</Text>
-        <Text numberOfLines={1} style={{ color: colors.textSecondary, fontSize: 14, marginTop: 3 }}>{item.artist}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 }}>
+          <DownloadMark state={dl} progress={dlProgress} track={colors.border ?? 'rgba(255,255,255,0.2)'} />
+          <Text numberOfLines={1} style={{ flex: 1, color: colors.textSecondary, fontSize: 14 }}>{item.artist}</Text>
+        </View>
       </View>
-      {isLiked && <Ionicons name="checkmark-circle" size={22} color={colors.accent} />}
+      {showHeart && (
+        <Pressable onPress={() => handlers.current.like(item)} hitSlop={10} style={styles.heart} accessibilityRole="button" accessibilityLabel={isLiked ? 'Unlike' : 'Like'} accessibilityState={{ selected: isLiked }}>
+          <Ionicons name={isLiked ? 'heart' : 'heart-outline'} size={22} color={isLiked ? colors.accent : colors.textSecondary} />
+        </Pressable>
+      )}
       <Pressable onPress={() => handlers.current.menu(item)} hitSlop={12} style={styles.more}>
         <Ionicons name="ellipsis-horizontal" size={20} color={colors.textSecondary} />
       </Pressable>
@@ -570,4 +644,6 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
   thumb: { width: 48, height: 48, borderRadius: 4 },
   more: { width: 32, alignItems: 'flex-end' },
+  heart: { width: 32, height: 44, alignItems: 'center', justifyContent: 'center' },
+  dlDot: { width: 14, height: 14, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
 });

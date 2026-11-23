@@ -11,6 +11,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNav } from '../nav/Nav';
 import { signOut, useSession } from '../data/auth';
 import { setCrossfade, useCrossfade } from '../player/crossfade';
+import { setCrashReports, useCrashReports } from '../data/crashReports';
 import { GlassFill, glassShadow } from '../components/Glass';
 import { useRenderProbe } from '../components/JankMonitor';
 
@@ -45,6 +46,7 @@ export function SettingsScreen() {
   const session = useSession();
   const profile = useProfile();
   const syncErr = useProfileSyncError();
+  const crashReports = useCrashReports();
   const crossfade = useCrossfade();
   const enter = useRotateEnter();
   useRenderProbe('Cài đặt', { theme, landscape, t, push, pad, session, profile, syncErr, crossfade });
@@ -171,6 +173,15 @@ export function SettingsScreen() {
         <GlassFill radius={20} solid={0.45} slab />
         <Text style={{ color: theme.colors.text, fontWeight: '600' }}>{t('settings.reset')}</Text>
       </Pressable>
+      {/* Send crash reports (on by default): crash + black-box log go to the developer automatically */}
+      <Text style={[label, { marginBottom: 4 }]}>{t('settings.crashReports')}</Text>
+      <Text style={{ color: theme.colors.textSecondary, fontSize: 13, marginBottom: 12, opacity: 0.8 }}>{t('settings.crashReportsHint')}</Text>
+      <Chips
+        options={['on', 'off'] as const}
+        value={crashReports ? 'on' : 'off'}
+        onSelect={(v) => setCrashReports(v === 'on')}
+        labels={{ on: t('common.on'), off: t('common.off') }}
+      />
       {/* Nhật ký dò lỗi (thay cho Playback lab) */}
       <Pressable onPress={() => push({ type: 'log' })} style={[styles.row, gs]}>
         <GlassFill radius={16} solid={0.5} slab />

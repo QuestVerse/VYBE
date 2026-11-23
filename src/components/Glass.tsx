@@ -80,14 +80,32 @@ export const SQUIRCLE = { borderCurve: 'continuous' as const };
 // dark: luôn là kính tối (bảng mở từ trong player, chữ trắng) bất kể theme
 // noRim: tắt ánh sáng ở viền (vệt sáng mép trên, bóng tối mép dưới, viền bắt sáng) — tuỳ chọn của dock.
 // Liquid Glass thật của iOS tự vẽ ánh sáng viền và không tắt được, nên khi tắt thì dùng kính tự vẽ (vẫn mờ, vẫn trong)
-export function GlassFill({ radius = 0, solid = 0, slab = false, dark: forceDark = false, noRim = false }: { radius?: number; solid?: number; slab?: boolean; dark?: boolean; noRim?: boolean }) {
+// material / liquid: overrides used by the Glass Lab debug screen (compare each material, real Liquid Glass vs self-drawn)
+export function GlassFill({
+  radius = 0,
+  solid = 0,
+  slab = false,
+  dark: forceDark = false,
+  noRim = false,
+  material: forceMaterial,
+  liquid,
+}: {
+  radius?: number;
+  solid?: number;
+  slab?: boolean;
+  dark?: boolean;
+  noRim?: boolean;
+  material?: GlassMaterial;
+  liquid?: boolean;
+}) {
   const { theme } = useTheme();
-  const inside = useContext(GlassInsideCtx);
+  const ctxInside = useContext(GlassInsideCtx);
+  const inside = liquid === undefined ? ctxInside : !liquid;
   const glassRgb = forceDark ? '22,22,26' : theme.colors.glassRgb;
   const glassTint = forceDark ? 'dark' : theme.colors.glassTint;
   const border = forceDark ? 'rgba(255,255,255,0.14)' : theme.colors.border;
   const g = useGlass();
-  const material: GlassMaterial = theme.glass.material ?? 'clear';
+  const material: GlassMaterial = forceMaterial ?? theme.glass.material ?? 'clear';
   const dark = glassTint === 'dark';
   const real = Platform.OS !== 'web';
   // ---- Neon: gần như trong suốt (nhoè rất nhẹ + lớp tối mỏng), chỉ có viền phát sáng màu đèn (chọn trong Theme Studio).
@@ -170,26 +188,34 @@ export function GlassFill({ radius = 0, solid = 0, slab = false, dark: forceDark
     );
   }
 
-  // ---- Kính tự vẽ: làm mờ + lớp màu + mép dày (vệt sáng trên, tối dưới) + vệt phản chiếu chéo
-  const blurBy = material === 'frost' ? 45 + g.level * 50 : material === 'smoke' ? 8 + g.level * 30 : 4 + g.level * 40;
+  // ---- Self-drawn glass (everything inside pages): each material has its own clear signature so the choice in
+  // Theme Studio is visible across the whole app, modelled on the dock's real Liquid Glass:
+  //  clear  — almost no blur or tint, strong edge light (lens rim) and a bright diagonal reflection
+  //  frost  — heavy blur + milky tint (iOS "regular" glass), soft inner glow
+  //  smoke  — dark tinted glass, medium blur, crisp light rim
+  const P =
+    material === 'frost'
+      ? { blur: 55 + g.level * 45, tintA: 0.42 + 0.33 * g.level, sheen: 0.12, glow: 'inset 0px 0px 18px rgba(255,255,255,0.32)' }
+      : material === 'smoke'
+      ? { blur: 18 + g.level * 40, tintA: 0, sheen: 0.1, glow: 'inset 0px 0px 12px rgba(255,255,255,0.07)' }
+      : { blur: 3 + g.level * 14, tintA: 0.02 + 0.18 * g.level, sheen: 0.28, glow: `inset 0px 0px 14px rgba(255,255,255,${dark ? 0.16 : 0.28})` };
   const androidBoost = Platform.OS === 'android' ? 0.2 : 0;
-  const a =
-    material === 'smoke'
-      ? 0
-      : Math.max(solid * (0.55 + 0.45 * g.level), (material === 'frost' ? 0.38 : 0.06) + androidBoost + g.level * (material === 'frost' ? 0.4 : 0.45));
-  const tint = material === 'smoke' ? `rgba(6,8,14,${(0.32 + 0.35 * g.level + androidBoost).toFixed(2)})` : `rgba(${glassRgb},${Math.min(0.92, a).toFixed(2)})`;
+  const a = material === 'smoke' ? 0 : Math.max(solid * (0.55 + 0.45 * g.level), P.tintA + androidBoost);
+  const tint = material === 'smoke' ? `rgba(6,8,14,${(0.38 + 0.32 * g.level + androidBoost).toFixed(2)})` : `rgba(${glassRgb},${Math.min(0.92, a).toFixed(2)})`;
   return (
     <View pointerEvents="none" style={[StyleSheet.absoluteFill, SQUIRCLE, { borderRadius: radius, overflow: 'hidden' }]}>
-      {real && <BlurView intensity={Math.round(blurBy)} tint={dark || material === 'smoke' ? 'dark' : 'light'} style={StyleSheet.absoluteFill} />}
+      {real && <BlurView intensity={Math.round(P.blur)} tint={dark || material === 'smoke' ? 'dark' : 'light'} style={StyleSheet.absoluteFill} />}
       <View style={[StyleSheet.absoluteFill, { backgroundColor: real ? tint : theme.colors.surface }]} />
-      {/* vệt phản chiếu chéo trên mặt kính */}
+      {/* diagonal reflection on the glass surface (strongest on clear) */}
       <LinearGradient
-        colors={['rgba(255,255,255,0.2)', 'rgba(255,255,255,0.05)', 'rgba(255,255,255,0)', 'rgba(255,255,255,0)', 'rgba(255,255,255,0.07)']}
+        colors={[`rgba(255,255,255,${P.sheen})`, `rgba(255,255,255,${(P.sheen / 4).toFixed(3)})`, 'rgba(255,255,255,0)', 'rgba(255,255,255,0)', `rgba(255,255,255,${(P.sheen / 3).toFixed(3)})`]}
         locations={[0, 0.22, 0.42, 0.72, 1]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 0.75 }}
         style={StyleSheet.absoluteFill}
       />
+      {/* lens edge: light caught inside the rim of the glass */}
+      {!noRim && <View style={[StyleSheet.absoluteFill, SQUIRCLE, { borderRadius: radius, boxShadow: P.glow }]} />}
       {/* mép dày: dải sáng mờ ở mép trên, dải tối ở mép dưới */}
       {!noRim && <LinearGradient
         colors={[dark ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.5)', 'rgba(255,255,255,0)', 'rgba(0,0,0,0)', dark ? 'rgba(0,0,0,0.22)' : 'rgba(0,0,0,0.08)']}

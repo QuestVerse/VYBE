@@ -14,8 +14,16 @@ export type DownloadState = 'none' | 'downloading' | 'done';
 
 const busy = new Set<string>();
 let files: Map<string, string> | null = null; // id bài → tên file
+const progress = new Map<string, number>(); // id → 0..1 while downloading
 const listeners = new Set<() => void>();
-const emit = () => listeners.forEach((l) => l());
+let version = 0; // bumps on every change, so lists know when to redraw their rows
+const emit = () => {
+  version++;
+  listeners.forEach((l) => l());
+};
+
+// 0..1 for a song being downloaded (0 if unknown)
+export const downloadProgress = (id: string) => progress.get(id) ?? 0;
 
 function fs() {
   return require('expo-file-system') as typeof import('expo-file-system');
@@ -66,7 +74,15 @@ export async function download(t: Track): Promise<boolean> {
       const muxed = attempt > 0;
       const info = await ytmusic().getAudio(t.id, undefined, muxed);
       try {
-        bytes = await rangeDownload(info.url, target);
+        progress.set(t.id, 0);
+        bytes = await rangeDownload(info.url, target, (done, total) => {
+          if (!total) return;
+          const f = done / total;
+          // redraw at most every 5%, so a long song doesn't redraw the list on every chunk
+          if (f - (progress.get(t.id) ?? 0) < 0.05 && f < 1) return;
+          progress.set(t.id, f);
+          emit();
+        });
         kind = muxed ? 'bản trình phát (mp4 360p)' : 'âm thanh';
         break;
       } catch (e) {
@@ -84,6 +100,7 @@ export async function download(t: Track): Promise<boolean> {
     return false;
   } finally {
     busy.delete(t.id);
+    progress.delete(t.id);
     emit();
   }
 }
@@ -112,6 +129,12 @@ export function useDownloads() {
     };
   }, []);
   return downloadState;
+}
+
+// Changes whenever any download starts, moves or finishes (for list extraData / memo deps)
+export function useDownloadVersion() {
+  useDownloads();
+  return version;
 }
 
 // ---- Chỉ hiện bài đã tải (nút "Đã tải" ở Thư viện) ----
