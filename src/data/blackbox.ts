@@ -57,6 +57,11 @@ export async function reportPreviousRun(previousSession: LogLine[]) {
   // killed in the foreground: the last thing the previous run logged was not going to the background
   const killed = !/app → (background|inactive|reload)/.test(last.msg) && !last.bg;
   if (!crashed && !killed) return;
+  try {
+    const L = require('./applog') as typeof import('./applog');
+    L.markCrash(last.t); // shows a crash badge on that day in Settings › Log
+    L.log('error', `previous run ${crashed ? 'crashed' : 'was closed by the system'} after ${L.fmtTime(last.t)}`);
+  } catch {}
   send(
     crashed ? 'crash' : 'killed',
     crashed ? 'log before the crash (previous run)' : 'log before the app was closed by the system (previous run)',

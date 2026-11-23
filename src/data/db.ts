@@ -397,6 +397,10 @@ export function cacheSet(key: string, value: unknown) {
   safe(undefined, (d) => d.runSync('INSERT OR REPLACE INTO kv (key, value, at) VALUES (?, ?, ?)', [key, JSON.stringify(value), Date.now()]));
 }
 
+export function cacheDel(key: string) {
+  safe(undefined, (d) => d.runSync('DELETE FROM kv WHERE key = ?', [key]));
+}
+
 // ---------------- Lưu trữ khoá-giá trị (cài đặt nhỏ, profile...) ----------------
 // Giống cacheGet/cacheSet nhưng báo cho màn hình cập nhật khi đổi
 export function kvGet<T>(key: string): T | null {
