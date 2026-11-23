@@ -51,6 +51,7 @@ import { musicSupported, ytmusic } from './src/music/lazy';
 import { ThemeTransition } from './src/theme/ThemeTransition';
 import { ThemeStudioScreen } from './src/screens/ThemeStudioScreen';
 import { AppUpdater } from './src/components/AppUpdater';
+import { UpdateNotice } from './src/components/UpdateNotice';
 import { AuthGate } from './src/screens/AuthGate';
 
 // Các màn hình tab không nhận props: bọc memo để App vẽ lại (đổi tab, mở trang...) thì chúng không phải vẽ lại theo.
@@ -324,6 +325,7 @@ function Root() {
       <AmbientEffect paused={ambientOff} />
       {Platform.OS !== 'web' && <JankMonitor />}
       <CoverTintSync />
+      <UpdateNotice />
       <View style={{ flex: 1 }}>
         <ContentArea>
         {/* Tab hiện tại. Có trang mở chồng thì tab mờ dần đi theo vị trí trang (vuốt quay lại thì hiện lại dần),
