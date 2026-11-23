@@ -452,17 +452,16 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
   // (bài đang phát, dấu tích thích) mới vẽ lại, không vẽ lại cả danh sách như trước
   const handlers = useRef({ play: (_r: Row) => {}, menu: (_r: Row) => {}, like: (_r: Row) => {} });
   handlers.current.like = (r: Row) => toggleLike(r.id, r);
-  const showHeart = page.source !== 'liked'; // every song on Liked Songs is liked, the heart would just repeat itself
   handlers.current.play = (r: Row) => playTrack(r, rows, ctx);
   handlers.current.menu = menuFor;
   const rowExtra = `${track.id}:${liked.size}:${text}:${dlVer}`;
   const renderRow = useCallback(
     ({ item, index }: { item: Row; index: number }) => (
       <Stagger i={index}>
-        <SongRow item={item} playing={item.id === track.id} isLiked={liked.has(item.id)} showHeart={showHeart} dl={downloadState(item.id)} dlProgress={downloadProgress(item.id)} showThumb={!isAlbum} handlers={handlers} colors={theme.colors} />
+        <SongRow item={item} playing={item.id === track.id} isLiked={liked.has(item.id)} dl={downloadState(item.id)} dlProgress={downloadProgress(item.id)} showThumb={!isAlbum} handlers={handlers} colors={theme.colors} />
       </Stagger>
     ),
-    [track.id, liked, isAlbum, theme.colors, showHeart, dlVer] // eslint-disable-line react-hooks/exhaustive-deps
+    [track.id, liked, isAlbum, theme.colors, dlVer] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   // ================= Màn hình ngang =================
@@ -544,7 +543,7 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
             estimatedHeight={73}
             renderItem={(it) => (
               <View style={{ borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: border }}>
-                <SongRow item={it.row} playing={it.row.id === track.id} isLiked={liked.has(it.row.id)} showHeart={showHeart} dl={downloadState(it.row.id)} dlProgress={downloadProgress(it.row.id)} showThumb handlers={handlers} colors={theme.colors} longPressMenu={false} />
+                <SongRow item={it.row} playing={it.row.id === track.id} isLiked={liked.has(it.row.id)} dl={downloadState(it.row.id)} dlProgress={downloadProgress(it.row.id)} showThumb handlers={handlers} colors={theme.colors} longPressMenu={false} />
               </View>
             )}
             onReorder={(ids) => (local ? reorderPlaylist(page.id, ids.map((id) => posOf.get(id)!)) : reorderLiked(ids.map((id) => trackOf.get(id)!)))}
