@@ -245,6 +245,18 @@ export function getLikedTracks(): Track[] {
   );
 }
 
+// Liked Songs keeps its order in liked_at (newest first). After the user drags songs around, rewrite liked_at so the
+// new order holds; it stays below the current newest time, so a song liked later still lands at the top.
+export function reorderLiked(trackIds: string[]) {
+  safe(undefined, (d) =>
+    d.withTransactionSync(() => {
+      const top = d.getFirstSync<{ m: number | null }>('SELECT MAX(liked_at) AS m FROM liked')?.m ?? Date.now();
+      trackIds.forEach((id, i) => d.runSync('UPDATE liked SET liked_at = ? WHERE track_id = ?', [top - i, id]));
+    })
+  );
+  changed();
+}
+
 // ---------------- Playlist trong máy ----------------
 const newId = () => `pl_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 

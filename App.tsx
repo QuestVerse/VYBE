@@ -358,7 +358,7 @@ function Root() {
                 ) : pg.type === 'feed' ? (
                   <FeedScreen />
                 ) : pg.type === 'log' ? (
-                  <LogScreen />
+                  <LogScreen day={pg.day} />
                 ) : pg.type === 'stats' ? (
                   <StatsScreen />
                 ) : (

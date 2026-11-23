@@ -21,7 +21,7 @@ import type { Track } from '../data/mock';
 import type { Collection } from '../music/ytmusic';
 import { musicSupported, toTrack, ytmusic } from '../music/lazy';
 import {
-  deletePlaylist, getLikedTracks, getPlaylist, getPlaylistTracks, isSaved, PlayContext, removeFromPlaylist, reorderPlaylist,
+  deletePlaylist, getLikedTracks, getPlaylist, getPlaylistTracks, isSaved, PlayContext, removeFromPlaylist, reorderLiked, reorderPlaylist,
   renamePlaylist, setPlaylistCover, setPlaylistDescription, setPlaylistPublic, setSaved, useDbVersion,
 } from '../data/db';
 import { useScreenSize } from '../components/ScreenSize';
@@ -516,7 +516,7 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
 
   // User playlist: hold a song and drag it up/down to reorder. Reorderable lays out every row (not virtualised),
   // so very long playlists keep the plain list.
-  if (local && rows.length > 0 && rows.length <= REORDER_MAX) {
+  if ((local || page.source === 'liked') && rows.length > 0 && rows.length <= REORDER_MAX) {
     // ids stay the same across a reorder (track id + nth copy of it), so rows don't re-mount when the order is saved
     const seen = new Map<string, number>();
     const items = rows.map((r, i) => {
@@ -525,6 +525,7 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
       return { id: `${r.id}#${n}`, row: r, pos: r.position ?? i };
     });
     const posOf = new Map(items.map((it) => [it.id, it.pos]));
+    const trackOf = new Map(items.map((it) => [it.id, it.row.id]));
     return (
       <View style={StyleSheet.absoluteFill}>
         <ReorderableScrollView bounces scrollYOut={scrollY} contentContainerStyle={{ paddingHorizontal: pad.left + 16, paddingBottom: pad.bottom + pad.endPadding }}>
@@ -543,7 +544,7 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
                 <SongRow item={it.row} playing={it.row.id === track.id} isLiked={liked.has(it.row.id)} showThumb handlers={handlers} colors={theme.colors} longPressMenu={false} />
               </View>
             )}
-            onReorder={(ids) => reorderPlaylist(page.id, ids.map((id) => posOf.get(id)!))}
+            onReorder={(ids) => (local ? reorderPlaylist(page.id, ids.map((id) => posOf.get(id)!)) : reorderLiked(ids.map((id) => trackOf.get(id)!)))}
           />
           {Footer}
         </ReorderableScrollView>

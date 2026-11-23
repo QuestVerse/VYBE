@@ -32,12 +32,12 @@ const TAG_COLOR: Record<LogTag, string> = {
 };
 
 // Nhật ký dò lỗi (Cài đặt → Nhật ký): dòng mới nhất ở trên, lọc theo loại, chép / gửi, xoá
-export function LogScreen() {
+export function LogScreen({ day = null }: { day?: string | null }) {
   const { theme } = useTheme();
   const { text, textSecondary, surface, accent, onAccent, border } = theme.colors;
   const t = useT();
   const pad = useContentInsets();
-  const { pop } = useNav();
+  const { pop, push } = useNav();
   const goBack = useAnimatedBack() ?? pop;
   const live = useLog(); // re-renders when new lines arrive
   const sheet = useActionSheet();
@@ -47,7 +47,8 @@ export function LogScreen() {
     setViewState(v);
     kvSet('log.view', v);
   };
-  const [day, setDay] = useState<string | null>(null);
+  // one day's log is its own page, so swiping back from it returns to the overview
+  const setDay = (d: string) => push({ type: 'log', day: d });
   const daysList = useMemo(() => listLogDays(), [live.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const meta = day ? daysList.find((d) => d.day === day) ?? null : null;
   const all = useMemo(() => (day ? getDayLines(day) : []), [day, day === dayOf(Date.now()) ? live.length : 0]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -106,7 +107,7 @@ export function LogScreen() {
   const header = (
     <View>
       <View style={styles.topBar}>
-        <Pressable onPress={day ? () => setDay(null) : goBack} hitSlop={10} style={[styles.circle, { backgroundColor: surface }]} accessibilityLabel={t('common.back')}>
+        <Pressable onPress={goBack} hitSlop={10} style={[styles.circle, { backgroundColor: surface }]} accessibilityLabel={t('common.back')}>
           <Ionicons name="chevron-back" size={24} color={text} />
         </Pressable>
         <View style={{ flex: 1, marginHorizontal: 12 }}>
@@ -195,6 +196,18 @@ export function LogScreen() {
         </View>
       </View>
       )}
+      {day && (
+        <View style={styles.topActions}>
+          <Pressable onPress={() => copyDay(day, all)} style={[styles.barBtn, { backgroundColor: surface, borderColor: border }]}>
+            <Ionicons name="copy-outline" size={18} color={text} />
+            <Text style={{ color: text, fontWeight: '700', fontSize: 15 }}>{t('log.copy')}</Text>
+          </Pressable>
+          <Pressable onPress={share} style={[styles.barBtn, { backgroundColor: accent, borderColor: accent }]}>
+            <Ionicons name="paper-plane-outline" size={18} color={onAccent} />
+            <Text style={{ color: onAccent, fontWeight: '800', fontSize: 15 }}>{t('log.send')}</Text>
+          </Pressable>
+        </View>
+      )}
       {day && meta?.crashes ? (
         <View style={[styles.crashBox, { borderColor: '#E5484D' }]}>
           <Ionicons name="warning-outline" size={18} color="#E5484D" />
@@ -240,7 +253,7 @@ export function LogScreen() {
 
   const contentStyle = {
     paddingTop: pad.top + 8,
-    paddingBottom: pad.bottom + pad.endPadding + (day ? 84 : 0),
+    paddingBottom: pad.bottom + pad.endPadding,
     paddingHorizontal: 16,
     width: '100%' as const,
     maxWidth: 720,
@@ -266,19 +279,7 @@ export function LogScreen() {
 
   return (
     <View style={StyleSheet.absoluteFill}>
-      {/* Copy / Send for this day */}
-      <View style={[styles.bottomBar, { bottom: pad.bottom + 12 }]}>
-        <Pressable onPress={() => copyDay(day, all)} style={[styles.barBtn, { backgroundColor: surface, borderColor: border }]}>
-          <Ionicons name="copy-outline" size={18} color={text} />
-          <Text style={{ color: text, fontWeight: '700', fontSize: 15 }}>{t('log.copy')}</Text>
-        </Pressable>
-        <Pressable onPress={share} style={[styles.barBtn, { backgroundColor: accent, borderColor: accent }]}>
-          <Ionicons name="paper-plane-outline" size={18} color={onAccent} />
-          <Text style={{ color: onAccent, fontWeight: '800', fontSize: 15 }}>{t('log.send')}</Text>
-        </Pressable>
-      </View>
       <FlatList
-        style={{ zIndex: -1 }}
         data={entered ? rows : EMPTY}
         keyExtractor={(l, i) => `${l.t}-${i}`}
         renderItem={renderItem}
@@ -307,6 +308,6 @@ const styles = StyleSheet.create({
   mono: { fontSize: 11, fontVariant: ['tabular-nums'] },
   msg: { fontSize: 13, lineHeight: 18, marginTop: 3 },
   crashBox: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12, padding: 12, borderRadius: 14, borderWidth: 1, backgroundColor: 'rgba(229,72,77,0.12)' },
-  bottomBar: { position: 'absolute', left: 16, right: 16, flexDirection: 'row', gap: 10, zIndex: 2 },
+  topActions: { flexDirection: 'row', gap: 10, marginTop: 14 },
   barBtn: { flex: 1, height: 50, borderRadius: 16, borderWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
 });
