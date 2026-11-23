@@ -32,7 +32,8 @@ async function fetchRange(url: string, start: number, end: number): Promise<Resp
 }
 
 // Ghi url vào file target. Trả về số byte đã ghi. Lỗi thì xoá file dở dang và ném lỗi
-export async function rangeDownload(url: string, target: FsFile): Promise<number> {
+// onProgress(done, total): after every chunk (total is 0 until the server says the size)
+export async function rangeDownload(url: string, target: FsFile, onProgress?: (done: number, total: number) => void): Promise<number> {
   const { FileMode } = fs();
   if (target.exists) target.delete();
   target.create();
@@ -52,6 +53,7 @@ export async function rangeDownload(url: string, target: FsFile): Promise<number
       if (buf.length === 0) break;
       await h.writeBytes(buf);
       start += buf.length;
+      onProgress?.(start, Number.isFinite(total) ? total : 0);
       if (r.status === 200) break; // máy chủ gửi cả file trong một lần
     }
   } catch (e) {

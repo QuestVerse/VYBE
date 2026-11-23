@@ -18,6 +18,8 @@ export const vi = {
   // Chung
   'common.done': 'Xong',
   'common.cancel': 'Huỷ',
+  'settings.crashReports': 'Gửi báo cáo lỗi',
+  'settings.crashReportsHint': 'Khi app bị văng, ZYX tự gửi cho nhà phát triển thông tin lỗi và nhật ký ngay trước lúc văng (tên máy, phiên bản iOS/Android, đang ở màn nào). Không gửi tên hay email của bạn. Tắt thì không gửi gì cả.',
   'log.today': "Hôm nay",
   'log.yesterday': "Hôm qua",
   'log.viewList': "Danh sách",
@@ -533,6 +535,8 @@ export const en: Record<StringKey, string> = {
 
   'common.done': 'Done',
   'common.cancel': 'Cancel',
+  'settings.crashReports': 'Send crash reports',
+  'settings.crashReportsHint': 'When the app crashes, ZYX sends the developer the error and the log from just before it (device model, iOS/Android version, which screen you were on). Your name and email are not sent. Turn this off and nothing is sent.',
   'log.today': "Today",
   'log.yesterday': "Yesterday",
   'log.viewList': "List",

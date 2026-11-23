@@ -9,6 +9,10 @@ const DSN = 'https://d6d997442437bb2ea3e00da0587668b1@o4512401130782720.ingest.d
 
 export function initSentry() {
   if (__DEV__) return;
+  // Settings › Send crash reports is off: don't start Sentry at all
+  try {
+    if (!(require('./data/crashReports') as typeof import('./data/crashReports')).crashReportsOn()) return;
+  } catch {}
   try {
     let updateId: string | undefined;
     let channel: string | undefined;
@@ -35,6 +39,9 @@ export function initSentry() {
       appHangTimeoutInterval: 0.5,
       // gửi kèm 40 dòng nhật ký gần nhất của app (đang ở màn nào, vừa làm gì) để đọc báo lỗi dễ hơn
       beforeSend: (event) => {
+        try {
+          if (!(require('./data/crashReports') as typeof import('./data/crashReports')).crashReportsOn()) return null;
+        } catch {}
         try {
           const L = require('./data/applog') as typeof import('./data/applog');
           event.extra = { ...(event.extra ?? {}), applog: L.logToText(L.getLog().slice(-40)).slice(-8000) };
