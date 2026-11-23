@@ -1,5 +1,6 @@
 import React, { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { installAppLog, log, setLogContext } from './src/data/applog';
+import { installAppLog, log, previousSession, setLogContext } from './src/data/applog';
+import { reportPreviousRun } from './src/data/blackbox';
 import { beginMotion, endMotion, JankMonitor, setPerfInfo, useRenderProbe } from './src/components/JankMonitor';
 import { updateCoverTint } from './src/theme/coverTint';
 import { LogScreen } from './src/screens/LogScreen';
@@ -510,6 +511,8 @@ function Boot({ children }: { children: React.ReactNode }) {
 
 // Nhật ký dò lỗi: bật sớm nhất có thể để bắt cả lỗi lúc khởi động
 installAppLog();
+// Black box: if the previous run crashed or was killed in the foreground, send its log (after startup settles)
+setTimeout(() => void reportPreviousRun(previousSession), 4000);
 
 export default function App() {
   return (

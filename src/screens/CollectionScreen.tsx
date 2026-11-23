@@ -21,10 +21,12 @@ import type { Track } from '../data/mock';
 import type { Collection } from '../music/ytmusic';
 import { musicSupported, toTrack, ytmusic } from '../music/lazy';
 import {
-  deletePlaylist, getLikedTracks, getPlaylist, getPlaylistTracks, isSaved, PlayContext, removeFromPlaylist,
+  deletePlaylist, getLikedTracks, getPlaylist, getPlaylistTracks, isSaved, PlayContext, removeFromPlaylist, reorderPlaylist,
   renamePlaylist, setPlaylistCover, setPlaylistDescription, setPlaylistPublic, setSaved, useDbVersion,
 } from '../data/db';
 import { useScreenSize } from '../components/ScreenSize';
+import { Reorderable } from '../components/Reorderable';
+import { ReorderableScrollView } from '../components/ReorderableScrollView';
 import Animated from 'react-native-reanimated';
 import { useDockCollapse } from '../components/dockCollapse';
 import { StretchyBg, useStretchScroll } from '../components/Stretchy';
@@ -512,6 +514,43 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
     );
   }
 
+  // User playlist: hold a song and drag it up/down to reorder. Reorderable lays out every row (not virtualised),
+  // so very long playlists keep the plain list.
+  if (local && rows.length > 0 && rows.length <= REORDER_MAX) {
+    // ids stay the same across a reorder (track id + nth copy of it), so rows don't re-mount when the order is saved
+    const seen = new Map<string, number>();
+    const items = rows.map((r, i) => {
+      const n = seen.get(r.id) ?? 0;
+      seen.set(r.id, n + 1);
+      return { id: `${r.id}#${n}`, row: r, pos: r.position ?? i };
+    });
+    const posOf = new Map(items.map((it) => [it.id, it.pos]));
+    return (
+      <View style={StyleSheet.absoluteFill}>
+        <ReorderableScrollView bounces scrollYOut={scrollY} contentContainerStyle={{ paddingHorizontal: pad.left + 16, paddingBottom: pad.bottom + pad.endPadding }}>
+          {Header}
+          <Reorderable
+            key={`reorder:${Math.round(width)}`}
+            data={items}
+            enabled
+            columns={1}
+            cellWidth={width - 2 * (pad.left + 16)}
+            gapX={0}
+            gapY={0}
+            estimatedHeight={73}
+            renderItem={(it) => (
+              <View style={{ borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: border }}>
+                <SongRow item={it.row} playing={it.row.id === track.id} isLiked={liked.has(it.row.id)} showThumb handlers={handlers} colors={theme.colors} longPressMenu={false} />
+              </View>
+            )}
+            onReorder={(ids) => reorderPlaylist(page.id, ids.map((id) => posOf.get(id)!))}
+          />
+          {Footer}
+        </ReorderableScrollView>
+      </View>
+    );
+  }
+
   return (
     <View style={StyleSheet.absoluteFill}>
       <Animated.FlatList
@@ -531,12 +570,15 @@ export function CollectionScreen({ page }: { page: CollectionPage }) {
   );
 }
 
+const REORDER_MAX = 300;
+
 type Handlers = React.MutableRefObject<{ play: (r: Row) => void; menu: (r: Row) => void }>;
 const SongRow = React.memo(function SongRow({
-  item, playing, isLiked, showThumb, handlers, colors,
-}: { item: Row; playing: boolean; isLiked: boolean; showThumb: boolean; handlers: Handlers; colors: { text: string; textSecondary: string; accent: string; surface: string } }) {
+  item, playing, isLiked, showThumb, handlers, colors, longPressMenu = true,
+}: { item: Row; playing: boolean; isLiked: boolean; showThumb: boolean; handlers: Handlers; colors: { text: string; textSecondary: string; accent: string; surface: string }; longPressMenu?: boolean }) {
+  // In a user playlist, holding a row lifts it for drag-to-reorder, so the menu is only on the "…" button there
   return (
-    <Pressable onPress={() => handlers.current.play(item)} onLongPress={() => handlers.current.menu(item)} style={styles.row}>
+    <Pressable onPress={() => handlers.current.play(item)} onLongPress={longPressMenu ? () => handlers.current.menu(item) : undefined} style={styles.row}>
       {/* Album: các bài cùng ảnh bìa nên bỏ ảnh đi (giống Spotify); playlist thì giữ ảnh từng bài */}
       {showThumb &&
         (item.thumb ? (

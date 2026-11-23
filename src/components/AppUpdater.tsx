@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Alert, AppState, Platform } from 'react-native';
 import { useT } from '../i18n';
+import { flushLog, log } from '../data/applog';
 
 const CHECK_EVERY = 30 * 60 * 1000; // quay lại app thì kiểm tra lại, nhưng không quá 30 phút một lần
 
@@ -35,7 +36,14 @@ export function AppUpdater() {
         const tt = tRef.current;
         Alert.alert(tt('update.title'), tt('update.body'), [
           { text: tt('update.later'), style: 'cancel' },
-          { text: tt('update.now'), onPress: () => Updates.reloadAsync().catch(() => {}) },
+          {
+            text: tt('update.now'),
+            onPress: () => {
+              log('ui', 'app → reload (update)'); // the black box must not take this restart for a crash
+              flushLog();
+              Updates.reloadAsync().catch(() => {});
+            },
+          },
         ]);
       } catch (e) {
         console.warn('[update]', e); // mất mạng, máy chủ lỗi...: lần sau thử lại

@@ -348,6 +348,21 @@ export function setDownload(t: Track, file: string | null) {
   changed();
 }
 
+// Drag-to-reorder in a user playlist: `order` is the old positions in their new order. Positions are rewritten
+// 0..n-1; rows are first moved out of the way (+1e6) because (playlist_id, position) is the primary key.
+export function reorderPlaylist(id: string, order: number[]) {
+  safe(undefined, (d) =>
+    d.withTransactionSync(() => {
+      d.runSync('UPDATE playlist_tracks SET position = position + 1000000 WHERE playlist_id = ?', [id]);
+      order.forEach((oldPos, i) => {
+        d.runSync('UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND position = ?', [i, id, oldPos + 1000000]);
+      });
+      d.runSync('UPDATE playlists SET updated_at = ? WHERE id = ?', [Date.now(), id]);
+    })
+  );
+  changed();
+}
+
 export function removeFromPlaylist(id: string, position: number) {
   safe(undefined, (d) =>
     d.withTransactionSync(() => {

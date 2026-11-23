@@ -3,6 +3,8 @@ import { Alert, FlatList, Pressable, ScrollView, Share, StyleSheet, Text, View }
 import { resetVinylFlags, setVinylFlag, useVinylFlags, VINYL_FLAGS } from '../debug/vinylFlags';
 import { isStableBuild } from '../data/channel';
 import { GlassLab } from '../debug/GlassLab';
+import { blackBoxSnapshot } from '../data/blackbox';
+import * as Sentry from '@sentry/react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../theme/ThemeProvider';
 import { useContentInsets } from '../components/FloatingDock';
@@ -119,6 +121,29 @@ export function LogScreen() {
           <Ionicons name={labOpen ? 'chevron-up' : 'chevron-down'} size={18} color={textSecondary} />
         </Pressable>
         {labOpen && <GlassLab text={text} sub={textSecondary} />}
+        {/* Black box tests (beta): send a log snapshot now, or crash the app natively to test the next-launch report */}
+        <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+          <Pressable
+            onPress={() => {
+              blackBoxSnapshot('test', 'manual test from the Log screen');
+              Alert.alert('Black box', 'Log snapshot sent to Sentry.');
+            }}
+            style={{ flex: 1, minHeight: 44, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: textSecondary, alignItems: 'center', justifyContent: 'center' }}
+          >
+            <Text style={{ color: text, fontWeight: '700' }}>Send log now</Text>
+          </Pressable>
+          <Pressable
+            onPress={() =>
+              Alert.alert('Crash the app?', 'ZYX closes immediately. Open it again: the log before the crash is sent to Sentry.', [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Crash', style: 'destructive', onPress: () => Sentry.nativeCrash() },
+              ])
+            }
+            style={{ flex: 1, minHeight: 44, borderRadius: 12, backgroundColor: '#c0392b', alignItems: 'center', justifyContent: 'center' }}
+          >
+            <Text style={{ color: '#fff', fontWeight: '700' }}>Simulate crash</Text>
+          </Pressable>
+        </View>
       </View>
       )}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 14 }}>

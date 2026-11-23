@@ -79,8 +79,13 @@ export function log(tag: LogTag, msg: string) {
   dirty = true;
   // Lỗi, hoặc app đang ở nền: lưu ngay. App bị iOS tắt ở nền thì không kịp lần lưu 5 giây sau → mất đúng mấy dòng cuối
   // (vụ 14/11 20:46: app chết ~1 giây sau khi xuống nền, nhật ký không còn dòng nào kể chuyện gì xảy ra)
-  if (tag === 'error' || AppState.currentState !== 'active') flushLog();
+  if (tag === 'error' || tag === 'jank' || AppState.currentState !== 'active') flushLog();
   notify();
+  // black box: warning signs send a log snapshot right away (see blackbox.ts)
+  if (tag === 'jank') {
+    const ms = Number(/(\d+)ms/.exec(msg)?.[1] ?? 0);
+    if (ms >= 2000) blackBox()?.blackBoxSnapshot('freeze', msg);
+  }
   // Chép ra nhật ký hệ thống (Android: logcat) để máy kiểm tra tự động trên GitHub đọc được
   if (tag !== 'music' && tag !== 'fx') console.log(`[zyx][${tag}] ${msg}`);
 }
@@ -116,6 +121,18 @@ export function logToText(arr: LogLine[]) {
   return arr.map((l) => `${fmtTime(l.t)} [${l.tag}]${l.bg ? ' (nền)' : ''} ${l.msg}`).join('\n');
 }
 
+// lazy require: blackbox imports this file
+function blackBox(): typeof import('./blackbox') | null {
+  try {
+    return require('./blackbox') as typeof import('./blackbox');
+  } catch {
+    return null;
+  }
+}
+
+// The previous run's log lines (everything after the previous "— mở app" marker), read before this run logs anything
+export let previousSession: LogLine[] = [];
+
 // ---------- Tự bắt lỗi, cảnh báo, khựng ----------
 let installed = false;
 export function installAppLog() {
@@ -135,15 +152,21 @@ export function installAppLog() {
   try {
     lastAlive = cacheGet<number>(ALIVE)?.value ?? null;
   } catch {}
+  try {
+    const prev = load();
+    let start = 0;
+    for (let i = prev.length - 1; i >= 0; i--) if (prev[i].msg.startsWith('— mở app')) { start = i; break; }
+    previousSession = prev.slice(start);
+  } catch {}
   log('ui', `— mở app ${ver0} (${Platform.OS} ${Platform.Version}) —${lastAlive ? ` lần trước còn chạy tới ${fmtTime(lastAlive)}` : ''}`);
 
   // Lưu định kỳ + đánh dấu "còn sống" (chạy cả khi app ở nền mà đang phát nhạc)
   setInterval(() => {
-    flushLog();
+    flushLog(); // every 3 s: the black box keeps at most ~3 s of ordinary lines unsaved when the app dies
     try {
       cacheSet(ALIVE, Date.now());
     } catch {}
-  }, 5000);
+  }, 3000);
 
   // App vào nền / quay lại
   AppState.addEventListener('change', (st) => {
@@ -153,6 +176,7 @@ export function installAppLog() {
   // iOS báo sắp hết bộ nhớ: nếu ngay sau dòng này app bị tắt / mở lại từ đầu → bị tắt vì tốn RAM, không phải lỗi code
   AppState.addEventListener('memoryWarning', () => {
     log('error', 'cảnh báo: iOS báo app sắp hết bộ nhớ (RAM)');
+    blackBox()?.blackBoxSnapshot('memory', 'iOS low-memory warning');
   });
 
   // Lỗi JS chưa bắt (kể cả lỗi làm app tắt): ghi + lưu ngay rồi để RN xử lý như cũ
@@ -163,6 +187,7 @@ export function installAppLog() {
       try {
         log('error', `${fatal ? 'LỖI NẶNG (app tắt)' : 'lỗi'}: ${e?.message ?? e}\n${String(e?.stack ?? '').split('\n').slice(0, 6).join('\n')}`);
         flushLog();
+        if (fatal) blackBox()?.blackBoxSnapshot('fatal', String(e?.message ?? e));
       } catch {}
       prev?.(e, fatal);
     });
