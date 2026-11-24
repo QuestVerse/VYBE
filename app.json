@@ -1,14 +1,15 @@
+
 {
   "expo": {
-    "name": "Zyx",
-    "slug": "zyx",
-    "version": "1.1.2",
+    "name": "VYBE",
+    "slug": "vybe",
+    "version": "1.0.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.henrywizzrd.zyx",
+      "bundleIdentifier": "com.questverse.vybe",
       "infoPlist": {
         "UIBackgroundModes": [
           "audio"
@@ -25,12 +26,8 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.henrywizzrd.zyx",
+      "package": "com.questverse.vybe",
       "permissions": [
-        "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.FOREGROUND_SERVICE",
@@ -53,8 +50,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "ZYX cần truy cập ảnh để bạn chọn ảnh đại diện và ảnh bìa cho profile.",
-          "cameraPermission": "ZYX cần dùng camera để bạn chụp ảnh đại diện và ảnh bìa cho profile."
+          "photosPermission": "VYBE needs access to your photos so you can choose profile pictures and cover images.",
+          "cameraPermission": "VYBE needs camera access so you can take profile pictures and cover images."
         }
       ],
       [
@@ -66,21 +63,6 @@
         }
       ]
     ],
-    "runtimeVersion": "1.1.0",
-    "updates": {
-      "checkAutomatically": "ON_LOAD",
-      "fallbackToCacheTimeout": 0,
-      "requestHeaders": {
-        "expo-channel-name": "preview"
-      },
-      "url": "https://u.expo.dev/7f4dcbef-7a9b-43e4-8cd6-6b6674c0ad03"
-    },
-    "extra": {
-      "eas": {
-        "projectId": "7f4dcbef-7a9b-43e4-8cd6-6b6674c0ad03"
-      }
-    },
-    "owner": "tysonneee",
-    "scheme": "zyx"
+    "runtimeVersion": "1.1.0"
   }
 }
