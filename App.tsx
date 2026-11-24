@@ -1,3 +1,4 @@
+
 import React, { startTransition, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { installAppLog, log, previousSession, setLogContext } from './src/data/applog';
 import { reportPreviousRun } from './src/data/blackbox';
@@ -42,7 +43,6 @@ import { BackdropBlur } from './src/components/BackdropBlur';
 import { NavProvider, Page, useNav, useNavStack } from './src/nav/Nav';
 import { CollectionScreen } from './src/screens/CollectionScreen';
 import { ArtistScreen } from './src/screens/ArtistScreen';
-import { FadeLayer, SwipeBack } from './src/nav/SwipeBack';
 import RAnimated, { cancelAnimation, Easing as REasing, makeMutable, SharedValue, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { GlassInside } from './src/components/Glass';
 import { scheduleOnRN } from 'react-native-worklets';
@@ -55,17 +55,12 @@ import { AppUpdater } from './src/components/AppUpdater';
 import { UpdateNotice } from './src/components/UpdateNotice';
 import { AuthGate } from './src/screens/AuthGate';
 
-// Các màn hình tab không nhận props: bọc memo để App vẽ lại (đổi tab, mở trang...) thì chúng không phải vẽ lại theo.
-// Chúng vẫn tự cập nhật khi theme, dữ liệu, player... đổi (qua context)
 const HomeTab = React.memo(HomeScreen);
-// Màn player nặng (~55ms mỗi lần vẽ): trước đây mỗi lần khung app vẽ lại (đổi tab, mở / đóng player, bật tắt hiệu ứng nền)
-// là player vẽ lại theo, 2–3 lần cho mỗi lần mở / đóng → luồng JS khựng ~300ms. Giờ chỉ vẽ lại khi chính nó cần
 const NowPlayingMemo = React.memo(NowPlayingScreen);
 const SearchTab = React.memo(SearchScreen);
 const LibraryTab = React.memo(LibraryScreen);
 const SettingsTab = React.memo(SettingsScreen);
 
-// Xoay theo điện thoại: dọc, ngang trái, ngang phải (không lộn ngược)
 ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.DEFAULT).catch(() => {});
 
 function Placeholder({ name }: { name: string }) {
@@ -78,7 +73,6 @@ function Placeholder({ name }: { name: string }) {
   );
 }
 
-// Khoá cố định cho mỗi trang trong chồng (theo vị trí + nội dung), để mở thêm trang không làm trang cũ bị dựng lại
 function pageKey(pg: Page, i: number) {
   if (pg.type === 'collection') return `${i}:col:${pg.source}:${pg.id}`;
   if (pg.type === 'artist') return `${i}:artist:${pg.id}`;
@@ -87,12 +81,6 @@ function pageKey(pg: Page, i: number) {
   return `${i}:${pg.type}`;
 }
 
-// ---- Chuyển tab trên dock: trượt nhẹ + mờ (kiểu Android 14 / Material "shared axis")
-// 4 tab coi như nằm thành hàng ngang: Home, Search, Library, Settings.
-//  - sang tab bên phải: tab cũ trượt sang trái ~30px và mờ đi, tab mới từ bên phải 30px trượt vào và hiện dần (và ngược lại)
-//  - nhảy xa (Home → Settings): đi thẳng, chỉ thấy 2 tab, các tab ở giữa vẫn đóng băng
-//  - bấm liên tục: mỗi tab có độ mờ / vị trí riêng, mỗi lần bấm là chạy tiếp từ đúng chỗ đang dở (không giật, không chạy lại từ đầu)
-// Tất cả chạy trên UI thread. Tab ẩn hẳn (mờ xong) thì đóng băng lại như trước.
 type PageTab = Exclude<TabId, 'player'>;
 const TAB_ORDER: PageTab[] = ['home', 'search', 'library', 'settings'];
 const TAB_SHIFT = 30;
@@ -103,9 +91,6 @@ function TabPane({ o, x, visible, active, pre, children }: { o: SharedValue<numb
   const style = useAnimatedStyle(() => ({ opacity: o.value, transform: [{ translateX: x.value }] }));
   return (
     <RAnimated.View pointerEvents={active ? 'auto' : 'none'} style={[StyleSheet.absoluteFill, { display: visible ? 'flex' : 'none' }, style]}>
-      {/* Tab đang ẩn: đóng băng, không vẽ lại cho tới khi quay lại tab đó */}
-      {/* pre: đang được dựng sẵn lúc rảnh → cho vẽ một lần (vẫn ẩn), xong thì đóng băng như tab ẩn khác */}
-      {/* Kính trong tab dùng kính tự vẽ (xem GlassInside trong Glass.tsx) */}
       <GlassInside>
         <Freeze freeze={!visible && !pre}>{children}</Freeze>
       </GlassInside>
@@ -113,7 +98,6 @@ function TabPane({ o, x, visible, active, pre, children }: { o: SharedValue<numb
   );
 }
 
-// Trang mở chồng (playlist, album...): kính bên trong dùng kính tự vẽ như trong tab (xem GlassInside trong Glass.tsx)
 function PageGlass({ children }: { children: React.ReactNode }) {
   return <GlassInside>{children}</GlassInside>;
 }
@@ -125,7 +109,6 @@ function TabStage({ shown, render, pre }: { shown: PageTab; render: (id: PageTab
     library: { o: useSharedValue(shown === 'library' ? 1 : 0), x: useSharedValue(0) },
     settings: { o: useSharedValue(shown === 'settings' ? 1 : 0), x: useSharedValue(0) },
   };
-  // Các tab đang hiện trên màn hình (tab đích + các tab đang mờ dần)
   const [visible, setVisible] = useState<Set<PageTab>>(() => new Set([shown]));
   const shownRef = useRef(shown);
   const prev = useRef(shown);
@@ -145,12 +128,10 @@ function TabStage({ shown, render, pre }: { shown: PageTab; render: (id: PageTab
     prev.current = shown;
     if (from === shown) return;
     const dir = Math.sign(TAB_ORDER.indexOf(shown) - TAB_ORDER.indexOf(from)) || 1;
-    // Tab mới: đang ẩn hẳn thì đặt ở bên phía nó đi vào; đang mờ dở thì chạy tiếp từ chỗ đó
     const t = sv[shown];
     if (t.o.value < 0.01) t.x.value = dir * TAB_SHIFT;
     t.o.value = withTiming(1, TAB_IN);
     t.x.value = withTiming(0, TAB_IN);
-    // Mọi tab khác đang hiện: trượt ra phía ngược lại và mờ đi, mờ xong thì ẩn + đóng băng
     for (const id of TAB_ORDER) {
       if (id === shown) continue;
       const s = sv[id];
@@ -165,7 +146,7 @@ function TabStage({ shown, render, pre }: { shown: PageTab; render: (id: PageTab
       n.add(shown);
       return n;
     });
-  }, [shown]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [shown]);
 
   return (
     <>
@@ -182,7 +163,6 @@ function TabStage({ shown, render, pre }: { shown: PageTab; render: (id: PageTab
   );
 }
 
-// Bộ màu "Theo ảnh bìa": mỗi lần đổi bài thì lấy màu từ ảnh bìa mới
 function CoverTintSync() {
   const { theme } = useTheme();
   const { track } = usePlayerPick('track');
@@ -197,21 +177,17 @@ function Root() {
   const { theme, landscape } = useTheme();
   const [tab, setTab] = useState<TabId>('home');
   const [lastTab, setLastTab] = useState<TabId>('home');
-  // Player đang hiện (kể cả lúc đang thu nhỏ về bong bóng)
   const [playerUp, setPlayerUp] = useState(false);
   useEffect(() => {
     if (tab === 'player') setPlayerUp(true);
-    else setAmbientOff(false); // bắt đầu đóng player: hiệu ứng nền chạy lại ngay, trong lúc nền rõ dần
+    else setAmbientOff(false);
   }, [tab]);
-  // Hiệu ứng nền chỉ dừng khi player đã phóng to xong hẳn (đang phóng to vẫn chạy, chỉ bị mờ đi)
   const [ambientOff, setAmbientOff] = useState(false);
   const navActions = useNav();
   const stack = useNavStack();
   const nav = { ...navActions, stack };
-  // Độ hiện của tab phía dưới các trang mở chồng (1 = hiện rõ, 0 = ẩn). SwipeBack điều khiển giá trị này trên UI thread
   const tabFade = useSharedValue(1);
   const depth = nav.stack.length;
-  // Độ hiện của từng trang trong chồng (trang phía trên điều khiển độ hiện của trang ngay dưới nó)
   const pageFades = useRef(new Map<string, SharedValue<number>>()).current;
   const fadeOf = (k: string) => {
     let v = pageFades.get(k);
@@ -221,13 +197,11 @@ function Root() {
     }
     return v;
   };
-  // Trang đã đóng thì bỏ giá trị của nó (mở lại sẽ hiện đầy đủ từ đầu)
   useEffect(() => {
     const alive = new Set(nav.stack.map((pg, i) => pageKey(pg, i)));
     for (const k of [...pageFades.keys()]) if (!alive.has(k)) pageFades.delete(k);
   }, [nav.stack, pageFades]);
   useLayoutEffect(() => {
-    // Đóng hết trang (đổi tab trên dock, hoặc quay lại tới tab): tab hiện rõ ngay
     if (depth === 0) {
       cancelAnimation(tabFade);
       tabFade.value = 1;
@@ -236,16 +210,14 @@ function Root() {
   const go = (t: TabId) => {
     if (t !== 'player') {
       setLastTab(t);
-      nav.reset(); // đổi tab thì đóng các trang đang mở (playlist, album...)
+      nav.reset();
     }
     setTab(t);
   };
   const page = nav.stack[nav.stack.length - 1];
-  // Ghi vào nhật ký đang ở tab / trang nào (để biết chỗ khựng, chỗ lỗi)
   useEffect(() => {
     setLogContext(tab === 'player' ? 'player' : page ? `${tab} › ${page.type}${'title' in page ? ` "${page.title}"` : 'name' in page ? ` "${page.name}"` : ''}` : tab);
   }, [tab, page]);
-  // Đổi tab trên dock (không tính mở player — đã có đo riêng): đo như một chuyển động (tab mờ dần, trượt vào)
   const prevTab = useRef(tab);
   useEffect(() => {
     const from = prevTab.current;
@@ -255,33 +227,23 @@ function Root() {
     const id = setTimeout(() => endMotion(), 600);
     return () => clearTimeout(id);
   }, [tab]);
-  // Thông tin kèm theo mỗi dòng "Hiệu năng" trong Nhật ký: theme, hiệu ứng nền, kính, kiểu player, hướng màn hình
   useEffect(() => {
     const fx = theme.background.type !== 'preset' ? `nền ${theme.background.type}` : (theme.effects.ambient as Record<string, boolean>)[theme.preset] ? 'hiệu ứng bật' : 'hiệu ứng tắt';
     setPerfInfo(
       `theme ${theme.preset}${theme.preset === 'smoke' ? `/${theme.effects.smokeTone}` : ''} (${fx}${ambientOff ? ', đang tạm dừng' : ''}) · kính ${theme.glass.material} · player ${theme.player.look ?? 'classic'} · ${landscape ? 'ngang' : 'dọc'}`
     );
   }, [theme, ambientOff, landscape]);
-  const shown = tab === 'player' ? lastTab : tab; // đang mở player thì vẫn vẽ tab phía sau
-  // Hàm đóng player cố định (không tạo mới mỗi lần vẽ) để màn player không phải vẽ lại theo khung app
+  const shown = tab === 'player' ? lastTab : tab;
   const lastTabRef = useRef(lastTab);
   lastTabRef.current = lastTab;
   const closePlayer = useCallback(() => setTab(lastTabRef.current), []);
   useRenderProbe('khung app', { tab, lastTab, playerUp, ambientOff, stack: nav.stack, theme, landscape });
-  // Tab đã mở thì giữ lại (chỉ ẩn đi), không dựng lại từ đầu mỗi lần bấm dock.
-  // Trước đây mỗi lần đổi tab là dựng lại cả màn hình (Home, Thư viện...), luồng JS bận một lúc nên bấm dock tiếp bị "đơ"
   const visited = useRef(new Set<TabId>()).current;
   visited.add(shown);
-  // Dựng sẵn các tab chưa mở lúc app rảnh (từ ~4 giây sau khi mở app, mỗi tab cách nhau ~1 giây), để lần đầu bấm dock
-  // sang Thư viện / Tìm kiếm / Cài đặt không phải đợi dựng cả trang (Thư viện lần đầu từng mất ~1,1 giây).
-  // startTransition: React dựng từng chút một, nhường máy khi cậu đang chạm / cuộn → không gây khựng
   const [preTab, setPreTab] = useState<PageTab | null>(null);
   useEffect(() => {
     let off = false;
     let timer: ReturnType<typeof setTimeout>;
-    // Chờ lúc rảnh, nhưng tối đa 1,5 giây: requestIdleCallback có thể KHÔNG BAO GIỜ chạy khi màn hình luôn có chuyển động
-    // (hiệu ứng nền, đĩa xoay...) → trước đây tab dựng sẵn cuối cùng (Tìm kiếm) bị kẹt ở trạng thái "đang dựng sẵn", không được
-    // đóng băng, nên bị vẽ lại 3 lần mỗi lần xoay máy / đổi theme dù không ai thấy (log 20/11 12:29: 60–80ms mỗi lần)
     const ric = (cb: () => void) => {
       let done = false;
       const once = () => {
@@ -311,39 +273,29 @@ function Root() {
       off = true;
       clearTimeout(timer);
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
   const tabEl = (id: PageTab) =>
     !visited.has(id) ? null : id === 'home' ? <HomeTab /> : id === 'search' ? <SearchTab /> : id === 'library' ? <LibraryTab /> : <SettingsTab />;
 
   return (
-    // Bảng thao tác (nút ... của bài hát / album) nằm trên cùng, kể cả trên Player
     <ActionSheetProvider closePlayer={() => tab === 'player' && setTab(lastTab)}>
     <View style={{ flex: 1, backgroundColor: theme.background.color }}>
       <StatusBar barStyle={theme.colors.statusBar} />
-      {/* Nền chung: màu của bộ màu, ảnh/GIF hoặc video người dùng chọn */}
       <AppBackground />
-      {/* Hiệu ứng nền (tuyết, lá, cá, hạt cà phê): chạy liên tục sau mọi trang, chỉ dừng khi mở Player */}
       <AmbientEffect paused={ambientOff} />
       {Platform.OS !== 'web' && <JankMonitor />}
       <CoverTintSync />
       <UpdateNotice />
       <View style={{ flex: 1 }}>
         <ContentArea>
-        {/* Tab hiện tại. Có trang mở chồng thì tab mờ dần đi theo vị trí trang (vuốt quay lại thì hiện lại dần),
-            để trang trong suốt phía trên chỉ thấy nền chung, không thấy chữ của tab chồng lên */}
         <FadeLayer value={tabFade} pointerEvents={page ? 'none' : 'auto'} style={{ flex: 1 }}>
           <TabStage shown={shown as PageTab} render={tabEl} pre={preTab} />
         </FadeLayer>
-        {/* Các trang mở chồng lên tab (playlist, album, nghệ sĩ, thể loại...). Dock và mini player vẫn nằm trên.
-            Mọi trang trong chồng đều được giữ lại (không dựng lại khi quay về), nhưng chỉ trang trên cùng hiện rõ:
-            trang bên dưới mờ hẳn đi, và hiện lại dần theo ngón tay khi vuốt trang trên cùng để quay lại.
-            (Trước đây chỉ vẽ trang trên cùng: vuốt quay lại thì phía dưới trống trơn, thả tay ra trang cũ mới dựng lại → giật) */}
         {nav.stack.map((pg, i) => {
           const k = pageKey(pg, i);
           const top = i === nav.stack.length - 1;
           return (
             <FadeLayer key={k} value={fadeOf(k)} pointerEvents={top ? 'box-none' : 'none'} style={StyleSheet.absoluteFill}>
-              {/* Trang nằm sâu hơn trang ngay dưới trang trên cùng thì không nhìn thấy được: đóng băng */}
               <PageGlass>
               <Freeze freeze={i < nav.stack.length - 2}>
               <SwipeBack onBack={nav.pop} fade={i === 0 ? tabFade : fadeOf(pageKey(nav.stack[i - 1], i - 1))}>
@@ -374,23 +326,16 @@ function Root() {
         <DropPreview />
         <ComposerHost />
         <SharedSyncer />
-        {/* Bong bóng ẩn từ lúc bấm mở player tới khi player thu hẳn về (playerUp), để không thấy hai ảnh cùng lúc */}
-        {/* Bấm mở player: nền phía sau (tab + hiệu ứng) mờ dần theo độ mở; đóng thì từ mờ trở lại rõ dần */}
-        {/* Luôn nằm sẵn (trong suốt khi player đóng): không phải dựng / gỡ lớp kính mờ mỗi lần mở, đóng player */}
         <BackdropBlur />
         <OfflineBanner />
-        {/* Dock Apple Music có mini player riêng (viên thuốc) → không dựng bong bóng mini player */}
         {!(theme.dock.mode === 'apple' || theme.dock.mode === 'zyx') && <MiniPlayer hidden={tab === 'player' || playerUp} onOpen={() => setTab('player')} />}
-          {/* Dock: kiểu Apple Music hoặc dạng thanh (kéo đổi chỗ được) — Cài đặt → Kiểu dock */}
           {theme.dock.mode === 'apple' && !landscape ? (
             <AppleDock active={tab} onChange={go} onOpenPlayer={() => setTab('player')} hidden={tab === 'player' || playerUp} />
           ) : theme.dock.mode === 'apple' ? (
-            // xoay ngang: dock dọc bên phải, nút tìm kiếm góc dưới phải, mini player viên thuốc giữa đáy
             <AppleDockLand active={tab} onChange={go} onOpenPlayer={() => setTab('player')} hidden={tab === 'player' || playerUp} />
           ) : theme.dock.mode === 'zyx' && !landscape ? (
             <ZyxDock active={tab} onChange={go} onOpenPlayer={() => setTab('player')} hidden={tab === 'player' || playerUp} />
           ) : theme.dock.mode === 'zyx' ? (
-            // xoay ngang: cùng bố cục với Apple Music, góc vuông vức của ZYX
             <AppleDockLand square active={tab} onChange={go} onOpenPlayer={() => setTab('player')} hidden={tab === 'player' || playerUp} />
           ) : (
             <FloatingDock active={tab} onChange={go} hidden={tab === 'player'} />
@@ -404,9 +349,6 @@ function Root() {
   );
 }
 
-// Vùng nội dung (tab + các trang mở chồng). Màn hình ngang: chừa tai thỏ bên trái và chỗ của dock dọc bên phải,
-// rồi đo lại kích thước vùng còn lại (ScreenSizeProvider lồng bên trong) → mọi màn hình bên trong tự xếp theo đúng bề rộng
-// còn lại, nội dung nằm giữa, không bị dock che
 function ContentArea({ children }: { children: React.ReactNode }) {
   const { theme, landscape } = useTheme();
   const insets = useSafeAreaInsets();
@@ -420,13 +362,10 @@ function ContentArea({ children }: { children: React.ReactNode }) {
   );
 }
 
-// Playlist công khai: dữ liệu trong máy đổi (thêm bài, đổi tên, bật Công khai...) → vài giây sau đồng bộ lên server.
-// Tách thành thành phần riêng để mỗi lần dữ liệu đổi chỉ chỗ này chạy lại, không vẽ lại cả app
 function SharedSyncer() {
   const dbv = useDbVersion();
   const session = useSession();
   const acc = session?.mode === 'account' ? session.id : undefined;
-  // Sao lưu / khôi phục thư viện theo tài khoản (src/data/backup.ts)
   useEffect(() => {
     startBackup(acc ?? null);
   }, [acc]);
@@ -438,16 +377,6 @@ function SharedSyncer() {
   return null;
 }
 
-// Màn hình chờ lúc mở app: chuẩn bị sẵn mọi thứ của YouTube Music trước khi hiện giao diện.
-//  - nạp thư viện youtubei.js (nặng)
-//  - tạo phiên duyệt (tìm kiếm, Home...) và phiên phát nhạc (tải + phân tích player của YouTube để giải mã link)
-// Nhờ vậy khi giao diện hiện ra: bấm dock không đơ, bấm bài là phát ngay.
-// Player đã phân tích được lưu vào file, nên từ lần mở app thứ hai thường nhanh hơn hẳn.
-// Chờ tối đa BOOT_MAX_MS (mạng chậm): quá thì vẫn vào app, phần còn lại chạy tiếp phía sau.
-// Mở app nhanh hơn: chỉ chờ phần CẦN để hiện Home (thư viện youtubei.js + phiên duyệt), tối đa BOOT_MAX_MS.
-// Phiên phát nhạc (tải + phân tích player của YouTube, nặng nhất) chạy SAU khi giao diện đã hiện và đứng yên một chút,
-// nên màn chờ ngắn hơn hẳn; bấm bài sớm quá thì phiên phát tự được tạo lúc đó như bình thường.
-// Thời gian từng phần được ghi vào Nhật ký ("khởi động: ...") để biết phần nào chậm.
 const BOOT_MAX_MS = 2500;
 function Boot({ children }: { children: React.ReactNode }) {
   const { theme } = useTheme();
@@ -462,7 +391,6 @@ function Boot({ children }: { children: React.ReactNode }) {
       done = true;
       setReady(true);
       const shownAt = Date.now() - t0;
-      // phiên phát nhạc: đợi giao diện vẽ xong và đứng yên rồi mới tạo
       setTimeout(() => {
         const idle: (cb: () => void) => void = (globalThis as any).requestIdleCallback ?? ((cb: () => void) => setTimeout(cb, 0));
         idle(() => {
@@ -477,7 +405,6 @@ function Boot({ children }: { children: React.ReactNode }) {
       }, 1200);
     };
     const cap = setTimeout(() => finish('hết giờ chờ'), BOOT_MAX_MS);
-    // Chờ một khung hình để màn hình chờ hiện ra trước, rồi mới nạp
     const id = setTimeout(() => {
       try {
         const r0 = Date.now();
@@ -501,7 +428,7 @@ function Boot({ children }: { children: React.ReactNode }) {
   if (!ready) {
     return (
       <View style={{ flex: 1, backgroundColor: theme.background.color, alignItems: 'center', justifyContent: 'center' }}>
-        <Text style={{ color: theme.colors.text, fontSize: 44, fontWeight: '900', letterSpacing: 6 }}>ZYX</Text>
+        <Text style={{ color: theme.colors.text, fontSize: 44, fontWeight: '900', letterSpacing: 6 }}>VYBE</Text>
         <ActivityIndicator color={theme.colors.textSecondary} style={{ marginTop: 18 }} />
       </View>
     );
@@ -509,9 +436,7 @@ function Boot({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-// Nhật ký dò lỗi: bật sớm nhất có thể để bắt cả lỗi lúc khởi động
 installAppLog();
-// Black box: if the previous run crashed or was killed in the foreground, send its log (after startup settles)
 setTimeout(() => void reportPreviousRun(previousSession), 4000);
 
 export default function App() {
@@ -522,11 +447,8 @@ export default function App() {
         <ThemeProvider>
           <PlayerProvider>
             <NavProvider>
-              {/* Đổi bộ màu mượt cho cả app (chụp màn hình rồi tan dần) */}
               <Boot>
-                {/* Tự kiểm tra và tải bản cập nhật (không cần cài lại app) */}
                 <AppUpdater />
-                {/* Chưa đăng nhập: màn đăng nhập (Khách / Tài khoản ZYX / Google) */}
                 <AuthGate>
                   <ThemeTransition>
                     <Root />
